@@ -37,9 +37,12 @@ jobs:
           go test -race -v ./...
 
   build:
-    name: Static Linux Binaries & Docker Image
+    name: Static Linux Binaries & GHCR Image
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -67,7 +70,9 @@ jobs:
 
       - name: Build & smoke-test Docker image
         run: |
-          docker build -t all-notify-server:ci ./server
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            -t all-notify-server:ci ./server
           KEY="$(docker run --rm all-notify-server:ci keygen)"
           test -n "$KEY"
           CID="$(docker run -d -p 127.0.0.1:18080:8080 all-notify-server:ci)"
@@ -81,3 +86,86 @@ jobs:
           echo "Server container failed /healthz check" >&2
           docker logs "$CID" >&2
           exit 1
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push image to GHCR
+        if: github.event_name != 'pull_request'
+        run: |
+          IMAGE="ghcr.io/$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')/all-notify-server"
+          SHA_TAG="${IMAGE}:sha-${GITHUB_SHA::7}"
+          docker tag all-notify-server:ci "$SHA_TAG"
+          docker push "$SHA_TAG"
+          if [ "${{ github.ref }}" = "refs/heads/main" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            docker tag all-notify-server:ci "${IMAGE}:latest"
+            docker push "${IMAGE}:latest"
+          fi
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            docker tag all-notify-server:ci "${IMAGE}:${{ github.ref_name }}"
+            docker push "${IMAGE}:${{ github.ref_name }}"
+          fi
+
+  deploy:
+    name: Deploy to VPS
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy GHCR image via SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          SSH_DIR="$(mktemp -d)"
+          trap 'rm -rf "$SSH_DIR"' EXIT
+          chmod 700 "$SSH_DIR"
+          printf '%s\n' "$VPS_SSH_KEY" > "$SSH_DIR/id_ed25519"
+          chmod 600 "$SSH_DIR/id_ed25519"
+          printf '%s\n' "$VPS_SSH_KNOWN_HOSTS" > "$SSH_DIR/known_hosts"
+          chmod 600 "$SSH_DIR/known_hosts"
+
+          SSH_OPTS=(-i "$SSH_DIR/id_ed25519" -p "$VPS_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_DIR/known_hosts")
+          SCP_OPTS=(-i "$SSH_DIR/id_ed25519" -P "$VPS_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_DIR/known_hosts")
+          TARGET="${VPS_USER}@${VPS_HOST}"
+
+          ssh "${SSH_OPTS[@]}" "$TARGET" "mkdir -p /root/all-notify/data && chown 10001:10001 /root/all-notify/data"
+          scp "${SCP_OPTS[@]}" server/docker-compose.prod.yml "${TARGET}:/root/all-notify/docker-compose.prod.yml"
+
+          REMOTE_SCRIPT='
+          set -eu
+          TMP_DOCKER=$(mktemp -d)
+          trap "rm -rf \"$TMP_DOCKER\"" EXIT
+          DOCKER_CONFIG="$TMP_DOCKER" docker login ghcr.io -u "$GHCR_USER" --password-stdin
+          cd /root/all-notify
+          DOCKER_CONFIG="$TMP_DOCKER" docker compose -f docker-compose.prod.yml pull
+          docker compose -f docker-compose.prod.yml up -d --remove-orphans
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8083/healthz | grep -q "\"ok\""; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "all-notify-server failed /healthz check" >&2
+          docker logs --tail 50 all-notify-server >&2
+          exit 1
+          '
+          REMOTE_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
+          printf '%s\n' "$GHCR_TOKEN" | ssh "${SSH_OPTS[@]}" "$TARGET" \
+            "GHCR_USER='${GHCR_USER}' sh -c 'S=\$(printf %s \"${REMOTE_B64}\" | base64 -d); exec sh -c \"\$S\"'"

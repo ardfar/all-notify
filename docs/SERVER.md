@@ -165,3 +165,16 @@ Run the binary via `systemd` or Docker bound to `127.0.0.1:8080`, and proxy `/v1
    Clear your shell history / unset `K_MASTER` once all devices are paired.
 5. **Soak & health checks**: Verify `docker stats --no-stream all-notify-server` (target <50 MB RAM), `du -sh server/data` (bounded by 24h TTL + `256 MB` blob cap), `all-notify-server token list` (`LAST_SEEN` updating), and Android battery usage over 48 hours.
 6. **Rollback / Update**: Pull the new commit or binary, run `docker compose --profile tls up -d --build` (SQLite WAL data in `./data` persists across upgrades); to roll back, check out the previous tag and re-run `up -d --build`.
+
+### Option C: GitHub Actions + GHCR Automated VPS Deploy
+`.github/workflows/server.yml` builds and publishes `ghcr.io/ardfar/all-notify-server` on pushes to `main` and `v*` tags, then deploys `server/docker-compose.prod.yml` to `/root/all-notify` on the VPS over SSH:
+- **Internal port**: `8083` (`0.0.0.0:8083 -> 8080`, healthcheck `http://127.0.0.1:8083/healthz`).
+- **Reverse proxy note**: When forwarding your domain to `127.0.0.1:8083`, enable WebSocket upgrade headers and set a proxy read timeout `>= 120s` for `/v1/ws`.
+- **Required GitHub Secrets**: `VPS_HOST`, `VPS_USER`, `VPS_PORT`, `VPS_SSH_KEY`, `VPS_SSH_KNOWN_HOSTS` (with `/root/all-notify/data` owned by UID `10001:10001`).
+- **CLI on GHCR deployment**:
+  ```bash
+  cd /root/all-notify
+  docker compose -f docker-compose.prod.yml exec all-notify-server all-notify-server keygen
+  docker compose -f docker-compose.prod.yml exec all-notify-server all-notify-server token create \
+    --name "Pixel 9" --platform android --url "https://notify.yourdomain.com" --key "<K_MASTER>"
+  ```

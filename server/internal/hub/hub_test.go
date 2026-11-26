@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -200,7 +201,7 @@ func TestReplayLiveRaceNoGapsNoDuplicatesStrictOrder(t *testing.T) {
 
 func TestSlowConsumerEvictionAndRecoveryReplay(t *testing.T) {
 	st, _, ts := openHubTestEnv(t, hub.Config{
-		SendBufferSize: 4,
+		SendBufferSize: 1,
 	})
 	ctx := context.Background()
 	_ = st.CreateDevice(ctx, store.Device{ID: "dev_s", Name: "Sender", Platform: "android", TokenHash: "hs", CreatedAt: 1})
@@ -210,13 +211,32 @@ func TestSlowConsumerEvictionAndRecoveryReplay(t *testing.T) {
 	defer connS.CloseNow()
 	_ = readJSONFrame(t, connS, 3*time.Second)
 
-	connSlow := dialDevice(t, ts, "dev_slow")
+	// Clamp the client's TCP receive buffer so Linux loopback buffers cannot absorb the entire burst.
+	wsURLSlow := "ws" + strings.TrimPrefix(ts.URL, "http") + "?device_id=dev_slow"
+	slowDialCtx, slowCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer slowCancel()
+	connSlow, _, err := websocket.Dial(slowDialCtx, wsURLSlow, &websocket.DialOptions{
+		HTTPClient: &http.Client{
+			Transport: &http.Transport{
+				DialContext: func(dctx context.Context, network, addr string) (net.Conn, error) {
+					c, err := (&net.Dialer{}).DialContext(dctx, network, addr)
+					if tc, ok := c.(*net.TCPConn); ok {
+						_ = tc.SetReadBuffer(4096)
+					}
+					return c, err
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("dial dev_slow: %v", err)
+	}
 	defer connSlow.CloseNow()
 	connSlow.SetReadLimit(128 * 1024)
 	_ = readJSONFrame(t, connSlow, 3*time.Second) // replay_complete
 
-	// Stop reading from connSlow and blast enough bytes to saturate loopback TCP buffers + SendBufferSize (4).
-	const burst = 80
+	// Stop reading from connSlow and blast enough bytes to saturate loopback TCP buffers + SendBufferSize (1).
+	const burst = 160
 	for i := 0; i < burst; i++ {
 		frame := map[string]any{
 			"op":         "relay",
