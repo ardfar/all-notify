@@ -613,29 +613,16 @@ async fn request_notification_permission(
 }
 
 #[tauri::command]
-fn send_test_notification(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    match state.notifier.permission_status() {
-        NotificationPermission::Denied => {
-            return Err(
-                "System notifications are disabled for All-Notify. Enable them in System Settings → Notifications."
-                    .to_string(),
-            );
-        }
-        NotificationPermission::Unavailable => {
-            return Err(
-                "System notifications are unavailable (app is not running from a signed .app bundle)."
-                    .to_string(),
-            );
-        }
-        NotificationPermission::NotDetermined => {
-            return Err(
-                "Grant notification permission first by clicking Allow notifications.".to_string(),
-            );
-        }
-        NotificationPermission::Authorized => {}
-    }
-    state.notifier.show_test();
-    Ok(())
+async fn send_test_notification(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let notifier = Arc::clone(&state.notifier);
+    let res = tokio::task::spawn_blocking(move || notifier.send_test())
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("state:updated", ());
+    res
 }
 
 #[tauri::command]
@@ -729,8 +716,6 @@ pub fn run() {
             notifier.set_on_permission_changed(Arc::new(move || {
                 let _ = app_for_perm.emit("state:updated", ());
             }));
-            // Re-check in case permission changed before callback was registered.
-            notifier.refresh_permission();
 
             let credentials =
                 CredentialManager::new(&data_dir, Box::new(KeyringSecretStore::default()));

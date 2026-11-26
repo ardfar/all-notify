@@ -287,7 +287,7 @@ html, body {
   color: #fff;
 }
 .primary-btn:hover { background: var(--accent-hover); }
-.primary-btn:disabled { opacity: 0.6; cursor: default; }
+.primary-btn:disabled, .secondary-btn:disabled, .text-btn:disabled { opacity: 0.6; cursor: default; }
 
 .secondary-btn {
   background: var(--surface-muted);

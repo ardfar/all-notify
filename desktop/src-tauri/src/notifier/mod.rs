@@ -85,6 +85,14 @@ pub fn build_windows_toast_xml(notif: &OsNotification) -> String {
     )
 }
 
+pub fn build_windows_test_toast_xml() -> String {
+    let title = xml_escape("All-Notify Test");
+    let body = xml_escape("Native Windows notifications are working.");
+    format!(
+        r#"<toast><visual><binding template="ToastGeneric"><text>{title}</text><text>{body}</text></binding></visual></toast>"#
+    )
+}
+
 pub fn xml_escape(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
@@ -133,6 +141,23 @@ mod tests {
         assert!(xml.contains(r#"placement="hero""#));
         assert!(xml.contains(r#"arguments="dismiss:7" activationType="background""#));
     }
+
+    #[test]
+    fn windows_test_toast_xml_has_no_dismiss_action() {
+        let xml = build_windows_test_toast_xml();
+        assert!(xml.contains("All-Notify Test"));
+        assert!(xml.contains("Native Windows notifications are working."));
+        assert!(
+            !xml.contains("dismiss:"),
+            "test toast must not attach a dismiss action bound to a DB row"
+        );
+    }
+
+    #[test]
+    fn noop_notifier_send_test_succeeds() {
+        let notifier = NoopNotifier;
+        assert!(notifier.send_test().is_ok());
+    }
 }
 
 pub trait PlatformNotifier: Send + Sync {
@@ -141,18 +166,8 @@ pub trait PlatformNotifier: Send + Sync {
     fn clear(&self, row_id: i64);
     fn clear_all(&self);
 
-    fn show_test(&self) {
-        self.show(&OsNotification {
-            id: TEST_NOTIFICATION_ID.to_string(),
-            row_id: 0,
-            app_name: "All-Notify".to_string(),
-            sender_label: "Desktop".to_string(),
-            title: "All-Notify Test".to_string(),
-            body: "Native desktop notifications are working.".to_string(),
-            icon_path: None,
-            attachment_path: None,
-            silent_update: false,
-        });
+    fn send_test(&self) -> Result<String, String> {
+        Ok("Test notification sent.".to_string())
     }
 
     fn permission_status(&self) -> NotificationPermission {

@@ -41,7 +41,7 @@ Because macOS and Windows handle native notification dismissal differently, the 
 - Attaches the decrypted app icon / image attachment via `UNNotificationAttachment` (temp file in app cache).
 - Respects macOS Focus / Do Not Disturb automatically via `UNUserNotificationCenter`.
 - `tauri.conf.json` configures `bundle.macOS.signingIdentity: "-"` (ad-hoc bundle signing, overridable via `APPLE_SIGNING_IDENTITY` for Developer ID certs) so `Info.plist` and `CFBundleIdentifier` (`com.allnotify.desktop`) are sealed into `_CodeSignature` — required by macOS `usernoted` to accept `UNUserNotificationCenter` authorization and delivery.
-- Tracks live `UNAuthorizationStatus` (`authorized`, `denied`, `not_determined`, `unavailable`), refreshes on popover focus, surfaces an actionable banner/Settings card with one-click **Open Settings** (`x-apple.systempreferences:com.apple.Notifications-Settings.extension`) / **Allow** and **Send test** notification.
+- Tracks live `UNAuthorizationStatus` (`authorized`, `denied`, `not_determined`, `unavailable`), refreshes on popover focus, surfaces an actionable banner/Settings card with one-click **Open Settings** (`x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.allnotify.desktop`) / **Allow** (falling back to System Settings if an earlier prompt timed out) and **Send test** notification (awaiting live `UNNotificationSettings` + delivery `NSError` and warning if banner style is set to `None`).
 - When the user clicks **Dismiss** (either on the native banner action or in the tray popover):
   - Removes the delivered notification (`removeDeliveredNotificationsWithIdentifiers`).
   - Emits `notification.dismissed` over WebSocket for all `notification_uids` on that entry.

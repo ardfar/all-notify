@@ -723,15 +723,31 @@ function showNotifTestFeedback(msg, isError = false) {
   els.notifTestFeedback.classList.toggle("error", isError);
   els.notifTestFeedback.classList.remove("hidden");
   clearTimeout(notifTestTimer);
-  notifTestTimer = setTimeout(() => els.notifTestFeedback.classList.add("hidden"), 3500);
+  const ttlMs = isError || msg.length > 45 ? 6000 : 3500;
+  notifTestTimer = setTimeout(() => els.notifTestFeedback.classList.add("hidden"), ttlMs);
 }
 
+let notifPermBusy = false;
+
 async function handleRequestNotifPermission() {
+  if (notifPermBusy) return;
+  notifPermBusy = true;
+  els.btnNotifPermAction.disabled = true;
+  els.btnEnableOsNotif.disabled = true;
   try {
     await invoke("request_notification_permission");
     await refreshState();
   } catch (err) {
-    showNotifTestFeedback(String(err), true);
+    const msg = String(err);
+    if (showingSettings) {
+      showNotifTestFeedback(msg, true);
+    } else {
+      els.notifPermText.textContent = msg;
+    }
+  } finally {
+    notifPermBusy = false;
+    els.btnNotifPermAction.disabled = false;
+    els.btnEnableOsNotif.disabled = false;
   }
 }
 
@@ -739,11 +755,15 @@ els.btnNotifPermAction.addEventListener("click", handleRequestNotifPermission);
 els.btnEnableOsNotif.addEventListener("click", handleRequestNotifPermission);
 
 els.btnTestOsNotif.addEventListener("click", async () => {
+  els.btnTestOsNotif.disabled = true;
   try {
-    await invoke("send_test_notification");
-    showNotifTestFeedback("Test notification sent.", false);
+    const msg = await invoke("send_test_notification");
+    showNotifTestFeedback(msg || "Test notification sent.", false);
   } catch (err) {
     showNotifTestFeedback(String(err), true);
+  } finally {
+    els.btnTestOsNotif.disabled = false;
+    await refreshState().catch(() => {});
   }
 });
 

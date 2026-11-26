@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::Duration;
 
@@ -12,11 +12,11 @@ use objc2::runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, AnyThread, DeclaredClass};
 use objc2_foundation::{NSArray, NSBundle, NSError, NSSet, NSString, NSURL};
 use objc2_user_notifications::{
-    UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent, UNNotification,
-    UNNotificationAction, UNNotificationActionOptions, UNNotificationAttachment,
+    UNAlertStyle, UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent,
+    UNNotification, UNNotificationAction, UNNotificationActionOptions, UNNotificationAttachment,
     UNNotificationCategory, UNNotificationCategoryOptions, UNNotificationPresentationOptions,
-    UNNotificationRequest, UNNotificationResponse, UNNotificationSettings, UNNotificationSound,
-    UNUserNotificationCenter, UNUserNotificationCenterDelegate,
+    UNNotificationRequest, UNNotificationResponse, UNNotificationSetting, UNNotificationSettings,
+    UNNotificationSound, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
 };
 use tokio::sync::mpsc;
 
@@ -98,23 +98,52 @@ impl PermissionState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NotificationSettingsSnapshot {
+    pub permission: NotificationPermission,
+    pub alert_style: UNAlertStyle,
+    pub alert_setting: UNNotificationSetting,
+}
+
+impl NotificationSettingsSnapshot {
+    pub(crate) fn banners_disabled(&self) -> bool {
+        self.alert_style == UNAlertStyle::None
+            || self.alert_setting == UNNotificationSetting::Disabled
+    }
+}
+
+pub(crate) fn notification_settings_url(bundle_id: Option<&str>) -> String {
+    match bundle_id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(id) => format!("{MACOS_NOTIFICATIONS_SETTINGS_URL}?id={id}"),
+        None => MACOS_NOTIFICATIONS_SETTINGS_URL.to_string(),
+    }
+}
+
 fn open_macos_notification_settings() {
-    if let Err(err) = Command::new("open")
-        .arg(MACOS_NOTIFICATIONS_SETTINGS_URL)
-        .spawn()
-    {
+    let bundle_id = NSBundle::mainBundle()
+        .bundleIdentifier()
+        .map(|id| id.to_string());
+    let url = notification_settings_url(bundle_id.as_deref());
+    if let Err(err) = Command::new("open").arg(&url).spawn() {
         eprintln!("[all-notify] failed to open macOS Notification Settings: {err}");
     }
 }
 
-fn query_settings_async(perm: Arc<PermissionState>, auto_request_if_not_determined: bool) {
+fn query_settings_async(
+    perm: Arc<PermissionState>,
+    prompt_requested: Option<Arc<AtomicBool>>,
+) {
     let center = UNUserNotificationCenter::currentNotificationCenter();
     let block = RcBlock::new(move |settings_ptr: NonNull<UNNotificationSettings>| {
         let status = unsafe { settings_ptr.as_ref() }.authorizationStatus();
         let mapped = map_un_auth_status(status);
         perm.set(mapped);
-        if auto_request_if_not_determined && mapped == NotificationPermission::NotDetermined {
-            request_authorization_async(Arc::clone(&perm));
+        if mapped == NotificationPermission::NotDetermined {
+            if let Some(flag) = prompt_requested.as_ref() {
+                if !flag.swap(true, Ordering::SeqCst) {
+                    request_authorization_async(Arc::clone(&perm));
+                }
+            }
         }
     });
     center.getNotificationSettingsWithCompletionHandler(&block);
@@ -134,14 +163,15 @@ fn request_authorization_async(perm: Arc<PermissionState>) {
                 err_ref.code(),
                 err_ref.localizedDescription()
             );
-        }
-        let next = if granted.as_bool() {
-            NotificationPermission::Authorized
         } else {
-            NotificationPermission::Denied
-        };
-        perm.set(next);
-        query_settings_async(Arc::clone(&perm), false);
+            let next = if granted.as_bool() {
+                NotificationPermission::Authorized
+            } else {
+                NotificationPermission::Denied
+            };
+            perm.set(next);
+        }
+        query_settings_async(Arc::clone(&perm), None);
     });
     center.requestAuthorizationWithOptions_completionHandler(auth_opts, &auth_block);
 }
@@ -215,6 +245,7 @@ pub struct MacOsNotifier {
     enabled: bool,
     staging_dir: PathBuf,
     permission: Arc<PermissionState>,
+    prompt_requested: Arc<AtomicBool>,
     _delegate: Option<RetainedDelegate>,
 }
 
@@ -232,6 +263,7 @@ impl MacOsNotifier {
                 enabled: false,
                 staging_dir,
                 permission: Arc::new(PermissionState::new(NotificationPermission::Unavailable)),
+                prompt_requested: Arc::new(AtomicBool::new(false)),
                 _delegate: None,
             };
         }
@@ -261,14 +293,16 @@ impl MacOsNotifier {
         center.setNotificationCategories(&categories);
 
         let permission = Arc::new(PermissionState::new(NotificationPermission::NotDetermined));
+        let prompt_requested = Arc::new(AtomicBool::new(false));
         // Inspect current authorization state and request permission if not yet determined
         // (macOS Focus / DND is respected automatically by UNUserNotificationCenter).
-        query_settings_async(Arc::clone(&permission), true);
+        query_settings_async(Arc::clone(&permission), Some(Arc::clone(&prompt_requested)));
 
         Self {
             enabled: true,
             staging_dir,
             permission,
+            prompt_requested,
             _delegate: Some(RetainedDelegate(delegate)),
         }
     }
@@ -293,33 +327,46 @@ impl MacOsNotifier {
                     err_ref.code(),
                     err_ref.localizedDescription()
                 );
-                query_settings_async(Arc::clone(&perm), false);
+                query_settings_async(Arc::clone(&perm), None);
             }
         });
         center.addNotificationRequest_withCompletionHandler(&req, Some(&block));
     }
 
-    fn query_settings_blocking(&self) -> NotificationPermission {
+    fn query_settings_snapshot_blocking(&self) -> NotificationSettingsSnapshot {
         if !self.enabled {
-            return NotificationPermission::Unavailable;
+            return NotificationSettingsSnapshot {
+                permission: NotificationPermission::Unavailable,
+                alert_style: UNAlertStyle::None,
+                alert_setting: UNNotificationSetting::NotSupported,
+            };
         }
         let (tx, rx) = std_mpsc::sync_channel(1);
         let tx = Mutex::new(Some(tx));
         let perm = Arc::clone(&self.permission);
         let center = UNUserNotificationCenter::currentNotificationCenter();
         let block = RcBlock::new(move |settings_ptr: NonNull<UNNotificationSettings>| {
-            let status = unsafe { settings_ptr.as_ref() }.authorizationStatus();
-            let mapped = map_un_auth_status(status);
+            let settings = unsafe { settings_ptr.as_ref() };
+            let mapped = map_un_auth_status(settings.authorizationStatus());
+            let snapshot = NotificationSettingsSnapshot {
+                permission: mapped,
+                alert_style: settings.alertStyle(),
+                alert_setting: settings.alertSetting(),
+            };
             perm.set(mapped);
             if let Ok(mut guard) = tx.lock() {
                 if let Some(sender) = guard.take() {
-                    let _ = sender.try_send(mapped);
+                    let _ = sender.try_send(snapshot);
                 }
             }
         });
         center.getNotificationSettingsWithCompletionHandler(&block);
         rx.recv_timeout(Duration::from_secs(2))
-            .unwrap_or_else(|_| self.permission.get())
+            .unwrap_or_else(|_| NotificationSettingsSnapshot {
+                permission: self.permission.get(),
+                alert_style: UNAlertStyle::Banner,
+                alert_setting: UNNotificationSetting::Enabled,
+            })
     }
 }
 
@@ -410,17 +457,91 @@ impl PlatformNotifier for MacOsNotifier {
         center.removeAllPendingNotificationRequests();
     }
 
-    fn show_test(&self) {
+    fn send_test(&self) -> Result<String, String> {
         if !self.enabled {
-            return;
+            return Err(
+                "System notifications are unavailable (app is not running from a signed .app bundle)."
+                    .to_string(),
+            );
         }
+        let snapshot = self.query_settings_snapshot_blocking();
+        match snapshot.permission {
+            NotificationPermission::Denied => {
+                return Err(
+                    "System notifications are disabled for All-Notify. Enable them in System Settings → Notifications."
+                        .to_string(),
+                );
+            }
+            NotificationPermission::Unavailable => {
+                return Err(
+                    "System notifications are unavailable (app is not running from a signed .app bundle)."
+                        .to_string(),
+                );
+            }
+            NotificationPermission::NotDetermined => {
+                return Err(
+                    "Grant notification permission first by clicking Allow notifications."
+                        .to_string(),
+                );
+            }
+            NotificationPermission::Authorized => {}
+        }
+
         let content = UNMutableNotificationContent::new();
         content.setTitle(&NSString::from_str("All-Notify Test"));
         content.setBody(&NSString::from_str(
             "Native macOS notifications are working.",
         ));
         content.setSound(Some(&UNNotificationSound::defaultSound()));
-        self.post_request(TEST_NOTIFICATION_ID, &content);
+
+        let seq = TEST_NOTIF_SEQ.fetch_add(1, Ordering::Relaxed);
+        let req_id = format!("{TEST_NOTIFICATION_ID}_{seq}");
+        let center = UNUserNotificationCenter::currentNotificationCenter();
+        let req = UNNotificationRequest::requestWithIdentifier_content_trigger(
+            &NSString::from_str(&req_id),
+            &content,
+            None,
+        );
+
+        let (tx, rx) = std_mpsc::sync_channel::<Result<(), String>>(1);
+        let tx = Mutex::new(Some(tx));
+        let perm = Arc::clone(&self.permission);
+        let block = RcBlock::new(move |err: *mut NSError| {
+            let outcome = if !err.is_null() {
+                let err_ref = unsafe { &*err };
+                let msg = format!(
+                    "macOS rejected test notification ({} code {}): {}",
+                    err_ref.domain(),
+                    err_ref.code(),
+                    err_ref.localizedDescription()
+                );
+                eprintln!("[all-notify] {msg}");
+                query_settings_async(Arc::clone(&perm), None);
+                Err(msg)
+            } else {
+                Ok(())
+            };
+            if let Ok(mut guard) = tx.lock() {
+                if let Some(sender) = guard.take() {
+                    let _ = sender.try_send(outcome);
+                }
+            }
+        });
+        center.addNotificationRequest_withCompletionHandler(&req, Some(&block));
+
+        match rx.recv_timeout(Duration::from_secs(3)) {
+            Ok(Err(err)) => Err(err),
+            Ok(Ok(())) | Err(_) => {
+                if snapshot.banners_disabled() {
+                    Ok(
+                        "Test sent to Notification Center, but banner popups are set to None in System Settings → Notifications."
+                            .to_string(),
+                    )
+                } else {
+                    Ok("Test notification sent.".to_string())
+                }
+            }
+        }
     }
 
     fn permission_status(&self) -> NotificationPermission {
@@ -431,11 +552,11 @@ impl PlatformNotifier for MacOsNotifier {
         if !self.enabled {
             return;
         }
-        query_settings_async(Arc::clone(&self.permission), false);
+        query_settings_async(Arc::clone(&self.permission), None);
     }
 
     fn request_permission_or_open_settings(&self) -> NotificationPermission {
-        let current = self.query_settings_blocking();
+        let current = self.query_settings_snapshot_blocking().permission;
         match current {
             NotificationPermission::Authorized | NotificationPermission::Unavailable => current,
             NotificationPermission::Denied => {
@@ -443,6 +564,7 @@ impl PlatformNotifier for MacOsNotifier {
                 NotificationPermission::Denied
             }
             NotificationPermission::NotDetermined => {
+                let already_requested = self.prompt_requested.swap(true, Ordering::SeqCst);
                 let (tx, rx) = std_mpsc::sync_channel(1);
                 let tx = Mutex::new(Some(tx));
                 let perm = Arc::clone(&self.permission);
@@ -460,30 +582,36 @@ impl PlatformNotifier for MacOsNotifier {
                             err_ref.code(),
                             err_ref.localizedDescription()
                         );
-                    }
-                    let next = if granted.as_bool() {
-                        NotificationPermission::Authorized
                     } else {
-                        NotificationPermission::Denied
-                    };
-                    perm.set(next);
+                        let next = if granted.as_bool() {
+                            NotificationPermission::Authorized
+                        } else {
+                            NotificationPermission::Denied
+                        };
+                        perm.set(next);
+                    }
                     if let Ok(mut guard) = tx.lock() {
                         if let Some(sender) = guard.take() {
                             let _ = sender.try_send((granted.as_bool(), has_err));
                         }
                     }
-                    query_settings_async(Arc::clone(&perm), false);
+                    query_settings_async(Arc::clone(&perm), None);
                 });
                 center.requestAuthorizationWithOptions_completionHandler(auth_opts, &auth_block);
 
                 match rx.recv_timeout(Duration::from_millis(1500)) {
-                    Ok((true, _)) => NotificationPermission::Authorized,
-                    Ok((false, _)) => {
-                        open_macos_notification_settings();
-                        NotificationPermission::Denied
+                    Ok((true, false)) => NotificationPermission::Authorized,
+                    Ok((false, false)) => NotificationPermission::Denied,
+                    Ok((_, true)) => self.query_settings_snapshot_blocking().permission,
+                    // Timed out: either macOS is showing the prompt, or an earlier startup prompt
+                    // timed out into Notification Center and macOS will not re-show it; open Settings
+                    // if we already prompted once so the user is never stuck on a dead button.
+                    Err(_) => {
+                        if already_requested {
+                            open_macos_notification_settings();
+                        }
+                        NotificationPermission::NotDetermined
                     }
-                    // Timed out while macOS is showing the interactive prompt; callback updates state when answered.
-                    Err(_) => NotificationPermission::NotDetermined,
                 }
             }
         }
@@ -495,6 +623,7 @@ impl PlatformNotifier for MacOsNotifier {
 }
 
 static STAGING_SEQ: AtomicU64 = AtomicU64::new(0);
+static TEST_NOTIF_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Prepares a temporary PNG/JPEG copy for `UNNotificationAttachment`, which moves the source file
 /// into Apple's notification store and does not natively accept WebP on all macOS versions.
@@ -568,9 +697,59 @@ mod tests {
             notifier.request_permission_or_open_settings(),
             NotificationPermission::Unavailable
         );
-        notifier.show_test();
+        let test_err = notifier
+            .send_test()
+            .expect_err("unbundled send_test must return Err");
+        assert!(test_err.contains("unavailable"));
         notifier.show_summary(3);
         notifier.clear(1);
+    }
+
+    #[test]
+    fn builds_notification_settings_url_with_bundle_id_or_fallback() {
+        assert_eq!(
+            notification_settings_url(Some("com.allnotify.desktop")),
+            "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.allnotify.desktop"
+        );
+        assert_eq!(
+            notification_settings_url(Some("   ")),
+            "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+        );
+        assert_eq!(
+            notification_settings_url(None),
+            "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+        );
+    }
+
+    #[test]
+    fn detects_banners_disabled_from_un_settings_snapshot() {
+        let banner_ok = NotificationSettingsSnapshot {
+            permission: NotificationPermission::Authorized,
+            alert_style: UNAlertStyle::Banner,
+            alert_setting: UNNotificationSetting::Enabled,
+        };
+        assert!(!banner_ok.banners_disabled());
+
+        let alert_ok = NotificationSettingsSnapshot {
+            permission: NotificationPermission::Authorized,
+            alert_style: UNAlertStyle::Alert,
+            alert_setting: UNNotificationSetting::Enabled,
+        };
+        assert!(!alert_ok.banners_disabled());
+
+        let style_none = NotificationSettingsSnapshot {
+            permission: NotificationPermission::Authorized,
+            alert_style: UNAlertStyle::None,
+            alert_setting: UNNotificationSetting::Enabled,
+        };
+        assert!(style_none.banners_disabled());
+
+        let setting_disabled = NotificationSettingsSnapshot {
+            permission: NotificationPermission::Authorized,
+            alert_style: UNAlertStyle::Banner,
+            alert_setting: UNNotificationSetting::Disabled,
+        };
+        assert!(setting_disabled.banners_disabled());
     }
 
     #[test]

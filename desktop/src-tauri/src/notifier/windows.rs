@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -11,13 +12,15 @@ use windows::UI::Notifications::{
 };
 
 use super::{
-    build_windows_toast_xml, xml_escape, DismissAction, OsNotification, PlatformNotifier,
+    build_windows_test_toast_xml, build_windows_toast_xml, xml_escape, DismissAction,
+    OsNotification, PlatformNotifier,
 };
 
 const WINDOWS_AUMID: &str = "com.allnotify.desktop";
 const TOAST_GROUP: &str = "allnotify";
 const SUMMARY_TAG: &str = "summary";
 const MAX_RETAINED_TOASTS: usize = 64;
+static WINDOWS_TEST_SEQ: AtomicU64 = AtomicU64::new(1);
 
 pub struct WindowsNotifier {
     dismiss_tx: mpsc::UnboundedSender<DismissAction>,
@@ -38,15 +41,21 @@ impl WindowsNotifier {
     }
 
     fn show_toast_xml(&self, xml_str: &str, tag: &str, row_id: Option<i64>, silent: bool) {
-        let Ok(doc) = XmlDocument::new() else {
-            return;
-        };
-        if doc.LoadXml(&HSTRING::from(xml_str)).is_err() {
-            return;
-        }
-        let Ok(toast) = ToastNotification::CreateToastNotification(&doc) else {
-            return;
-        };
+        let _ = self.show_toast_xml_result(xml_str, tag, row_id, silent);
+    }
+
+    fn show_toast_xml_result(
+        &self,
+        xml_str: &str,
+        tag: &str,
+        row_id: Option<i64>,
+        silent: bool,
+    ) -> Result<(), String> {
+        let doc = XmlDocument::new().map_err(|e| format!("Failed to create toast XML: {e}"))?;
+        doc.LoadXml(&HSTRING::from(xml_str))
+            .map_err(|e| format!("Failed to parse toast XML: {e}"))?;
+        let toast = ToastNotification::CreateToastNotification(&doc)
+            .map_err(|e| format!("Failed to create Windows toast: {e}"))?;
         let _ = toast.SetTag(&HSTRING::from(tag));
         let _ = toast.SetGroup(&HSTRING::from(TOAST_GROUP));
         if silent {
@@ -97,22 +106,23 @@ impl WindowsNotifier {
             );
         }
 
-        if let Ok(notifier) =
+        let notifier =
             ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(WINDOWS_AUMID))
-        {
-            if notifier.Show(&toast).is_ok() {
-                if let Some(id) = row_id {
-                    if let Ok(mut map) = self.active_toasts.lock() {
-                        if map.len() >= MAX_RETAINED_TOASTS {
-                            if let Some(&oldest_id) = map.keys().min() {
-                                map.remove(&oldest_id);
-                            }
-                        }
-                        map.insert(id, toast);
+                .map_err(|e| format!("Failed to initialize Windows toast notifier: {e}"))?;
+        notifier
+            .Show(&toast)
+            .map_err(|e| format!("Windows failed to show toast notification: {e}"))?;
+        if let Some(id) = row_id {
+            if let Ok(mut map) = self.active_toasts.lock() {
+                if map.len() >= MAX_RETAINED_TOASTS {
+                    if let Some(&oldest_id) = map.keys().min() {
+                        map.remove(&oldest_id);
                     }
                 }
+                map.insert(id, toast);
             }
         }
+        Ok(())
     }
 }
 
@@ -161,5 +171,13 @@ impl PlatformNotifier for WindowsNotifier {
                 &HSTRING::from(WINDOWS_AUMID),
             );
         }
+    }
+
+    fn send_test(&self) -> Result<String, String> {
+        let xml = build_windows_test_toast_xml();
+        let seq = WINDOWS_TEST_SEQ.fetch_add(1, Ordering::Relaxed) % 1_000_000;
+        let tag = format!("test_{seq}");
+        self.show_toast_xml_result(&xml, &tag, None, false)?;
+        Ok("Test notification sent.".to_string())
     }
 }
