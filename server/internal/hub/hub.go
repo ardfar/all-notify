@@ -36,6 +36,7 @@ type Config struct {
 	MaxPendingReplay        int
 	Now                     func() time.Time
 	Logger                  *slog.Logger
+	BeforeWrite             func(ctx context.Context, deviceID string)
 }
 
 type EventFrame struct {
@@ -118,6 +119,7 @@ type Hub struct {
 	maxPendingReplay        int
 	now                     func() time.Time
 	logger                  *slog.Logger
+	beforeWrite             func(ctx context.Context, deviceID string)
 
 	relayMu sync.Mutex
 	wg      sync.WaitGroup
@@ -165,6 +167,7 @@ func New(st *store.Store, cfg Config) *Hub {
 		maxPendingReplay:        cfg.MaxPendingReplay,
 		now:                     cfg.Now,
 		logger:                  cfg.Logger,
+		beforeWrite:             cfg.BeforeWrite,
 		clients:                 make(map[string]*client),
 	}
 }
@@ -428,6 +431,12 @@ func (h *Hub) ServeConn(ctx context.Context, conn *websocket.Conn, dev *store.De
 			case <-connCtx.Done():
 				return
 			case payload := <-c.send:
+				if h.beforeWrite != nil {
+					h.beforeWrite(connCtx, dev.ID)
+				}
+				if connCtx.Err() != nil {
+					return
+				}
 				wctx, wcancel := context.WithTimeout(connCtx, defaultWriteTimeout)
 				err := conn.Write(wctx, websocket.MessageText, payload)
 				wcancel()

@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -200,8 +200,22 @@ func TestReplayLiveRaceNoGapsNoDuplicatesStrictOrder(t *testing.T) {
 }
 
 func TestSlowConsumerEvictionAndRecoveryReplay(t *testing.T) {
+	var stall atomic.Bool
+	stall.Store(true)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+
 	st, _, ts := openHubTestEnv(t, hub.Config{
 		SendBufferSize: 1,
+		BeforeWrite: func(ctx context.Context, devID string) {
+			if devID == "dev_slow" && stall.Load() {
+				select {
+				case <-ctx.Done():
+				case <-release:
+				}
+			}
+		},
 	})
 	ctx := context.Background()
 	_ = st.CreateDevice(ctx, store.Device{ID: "dev_s", Name: "Sender", Platform: "android", TokenHash: "hs", CreatedAt: 1})
@@ -211,38 +225,19 @@ func TestSlowConsumerEvictionAndRecoveryReplay(t *testing.T) {
 	defer connS.CloseNow()
 	_ = readJSONFrame(t, connS, 3*time.Second)
 
-	// Clamp the client's TCP receive buffer so Linux loopback buffers cannot absorb the entire burst.
-	wsURLSlow := "ws" + strings.TrimPrefix(ts.URL, "http") + "?device_id=dev_slow"
-	slowDialCtx, slowCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer slowCancel()
-	connSlow, _, err := websocket.Dial(slowDialCtx, wsURLSlow, &websocket.DialOptions{
-		HTTPClient: &http.Client{
-			Transport: &http.Transport{
-				DialContext: func(dctx context.Context, network, addr string) (net.Conn, error) {
-					c, err := (&net.Dialer{}).DialContext(dctx, network, addr)
-					if tc, ok := c.(*net.TCPConn); ok {
-						_ = tc.SetReadBuffer(4096)
-					}
-					return c, err
-				},
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("dial dev_slow: %v", err)
-	}
+	connSlow := dialDevice(t, ts, "dev_slow")
 	defer connSlow.CloseNow()
 	connSlow.SetReadLimit(128 * 1024)
 	_ = readJSONFrame(t, connSlow, 3*time.Second) // replay_complete
 
-	// Stop reading from connSlow and blast enough bytes to saturate loopback TCP buffers + SendBufferSize (1).
-	const burst = 160
+	// Stall dev_slow's writer cleanly between frames so SendBufferSize (1) overflows deterministically.
+	const burst = 10
 	for i := 0; i < burst; i++ {
 		frame := map[string]any{
 			"op":         "relay",
 			"event_id":   fmt.Sprintf("burst_%03d", i),
 			"target":     "broadcast",
-			"ciphertext": strings.Repeat("C", 50000),
+			"ciphertext": strings.Repeat("C", 128),
 		}
 		raw, _ := json.Marshal(frame)
 		wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -253,7 +248,7 @@ func TestSlowConsumerEvictionAndRecoveryReplay(t *testing.T) {
 		}
 	}
 
-	// Eventually reading from connSlow must hit a close error (StatusPolicyViolation).
+	// Reading from connSlow must hit a clean StatusPolicyViolation close error.
 	var closeErr error
 	for i := 0; i < burst+10; i++ {
 		rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -270,6 +265,9 @@ func TestSlowConsumerEvictionAndRecoveryReplay(t *testing.T) {
 	if status := websocket.CloseStatus(closeErr); status != websocket.StatusPolicyViolation {
 		t.Fatalf("slow consumer close status = %v (err=%v), want StatusPolicyViolation", status, closeErr)
 	}
+
+	stall.Store(false)
+	releaseOnce.Do(func() { close(release) })
 
 	// Because nothing was acked, reconnecting must deliver all burst events cleanly
 	// (those already persisted arrive before replay_complete; any still in flight from connS arrive live after).
