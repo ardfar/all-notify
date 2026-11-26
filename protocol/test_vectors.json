@@ -1,0 +1,176 @@
+{
+  "protocol_version": 1,
+  "kdf": {
+    "algorithm": "HKDF-SHA256",
+    "salt_hex": "",
+    "k_master_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "k_master_base64url": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "event_info": "all-notify:v1:event",
+    "blob_info": "all-notify:v1:blob",
+    "k_event_hex": "4b28cea32d93fe9c7bcf2a4efdfa72d5c3c406420e7cbc0adba216fb1582e6c1",
+    "k_blob_hex": "4c609b73104feb86c119ff6098b10bddc4f54ea044bc8a83105c588771456667"
+  },
+  "event_vectors": [
+    {
+      "name": "notification_posted_with_attachment",
+      "event_id": "01JABCDEF1234567890ABCDEFG",
+      "sender_device_id": "dev_01JABCDEF1234567890",
+      "aad": "v1|01JABCDEF1234567890ABCDEFG|dev_01JABCDEF1234567890",
+      "nonce_hex": "0102030405060708090a0b0c0d0e0f101112131415161718",
+      "plaintext_utf8": "{\"type\":\"notification.posted\",\"notification_uid\":\"dev_01JABCDEF1234567890:1764060000123:a8f3c1\",\"sender_device_name\":\"Pixel 9\",\"posted_at\":1764060000123,\"app\":{\"package\":\"com.whatsapp\",\"name\":\"WhatsApp\",\"icon_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"icon_blob_id\":\"icon_e3b0c44298fc1c14\"},\"content\":{\"title\":\"Alice\",\"body\":\"Are we still on for dinner at 7?\",\"sub_text\":\"2 messages\",\"category\":\"msg\",\"group_key\":\"whatsapp:alice\"},\"attachments\":[{\"kind\":\"image\",\"blob_id\":\"img_01JABCDEF1234567890\",\"mime\":\"image/webp\",\"width\":800,\"height\":600,\"size_bytes\":84210,\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\"}]}",
+      "ciphertext_base64url": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYfp_qMejuplMANOiCg8OpjNcl3VqXRqxD4g7hbtTjvaiX3JJud0JuFY7qY-EZgqZf3VHT0RuPE2ovCuxk9__SAqGwgp6KifgbNkd3P5RSu0dN97j_2n3rgIJANSckCi3VmYHa8hIDZalbyNCQ30n3SqWJjdnOj_HWIY0BSLJ02QDKBNhgi0-tgF5q7R275a3FL_DUIqDYxNJhakI_M1lHcSAJhvSsNDe_TwRy9W_lzfUM6oCQlP8J75jmslB5GhWlKL2OWNtFFs3emPpudgnnQUtaYT1ofJcY5ovIxpoAghZ7q59UoNGGp-1h11GfSRbI1kI0jJr4OHTOgIlKFIo9PjE1YQCeuOBlEPWM6k3RnUMmgS8wcMgwJWqYsEa1xrzZ7uSXu5ufuFGYuEphMA6_siOs-S4lgcyE6U7qTeYLJlTSs7Sxcn03dMfBfzqdIWajvxwLAusW0nDEgTNyyKRal4cav-0Mjg-QXfKyGMLSpP9oOZ0XZFAXDWaNwuwD6kdO2uLXsNGvXgpEjmK7p3VtKEMDV9HTHhryw5dP2-DKRVWdZQgtSDYV0nx6dBpP3DxnHxCzfKAD2NpOha8LbizZnpwRG151KAvsr76GMokw2T-mqL2sqBSBNLaUPoxr2JE-EuT49QB_vIZM9YFMbB7ePoBHKu5MFK0-vUDQUVn3T5UMBYi4MYxiTQT_fidTRLxDDX9nayy4bWMNamCCjNSOwk81oCFvfBa9ARsTRkIo-sXaQlgF0f1vqCos9EISu9Ob8WtrMOdBdQ4GU3WsY-ldoKtsYBrRNwqldBBu-O_KR3ee69dYkN7MBi229Ank2G37wJCABTI7MokgBIZkDapbnEWUFlXw7qsAY3xtTNADQQKwMiOvr34mVYww6gJbCXP6-kNrr_0CxdBls5H9EeOM_Qg",
+      "ciphertext_hex": "0102030405060708090a0b0c0d0e0f1011121314151617187e9fea31e8eea6530034e88283c3a98cd725dd5a9746ac43e20ee16ed4e3bda897dc926e77426e158eea63e11982a65fdd51d3d11b8f136a2f0aec64f7ffd202a1b0829e8a89f81b3647773f9452bb474df7b8ffda7deb8082403527240a2dd59981daf2120365a95bc8d090df49f74aa5898dd9ce8ff1d6218d0148b274d900ca04d8608b4fad805e6aed1dbbe5adc52ff0d422a0d8c4d2616a423f33594771200986f4ac3437bf4f0472f56fe5cdf50cea809094ff09ef98e6b250791a15a528bd8e58db4516cdde98fa6e7609e7414b5a613d687c9718e68bc8c69a0082167bab9f54a0d186a7ed61d7519f4916c8d642348c9af83874ce80894a148a3d3e313561009eb8e06510f58cea4dd19d4326812f3070c830256a98b046b5c6bcd9eee497bb9b9fb85198b84a61300ebfb223acf92e2581cc84e94eea4de60b2654d2b3b4b1727d3774c7c17f3a9d2166a3bf1c0b02eb16d270c4813372c8a45a97871abfed0c8e0f905df2b218c2d2a4ff68399d176450170d668dc2ec03ea474edae2d7b0d1af5e0a448e62bba7756d28430357d1d31e1af2c3974fdbe0ca45559d65082d483615d27c7a741a4fdc3c671f10b37ca003d8da4e85af0b6e2cd99e9c111b5e75280becafbe86328930d93fa6a8bdaca8148134b6943e8c6bd8913e12e4f8f5007fbc864cf5814c6c1ede3e80472aee4c14ad3ebd40d05159f74f950c0588b8318c624d04ff7e275344bc430d7f676b2cb86d630d6a60828cd48ec24f35a0216f7c16bd011b13464228fac5da425805d1fd6fa82a2cf44212bbd39bf16b6b30e741750e065375ac63e95da0ab6c601ad1370aa574106ef8efca47779eebd75890decc062db6f409e4d86dfbc0908005323b3289200486640daa5b9c45941655f0eeab00637c6d4cd0034102b03223afaf7e26558c30ea025b0973fafa436baffd02c5d065b391fd11e38cfd08"
+    },
+    {
+      "name": "notification_dismissed_multi_uid",
+      "event_id": "01JABCDEF1234567890ABCDEFH",
+      "sender_device_id": "dev_01JMACBOOKPRO00000001",
+      "aad": "v1|01JABCDEF1234567890ABCDEFH|dev_01JMACBOOKPRO00000001",
+      "nonce_hex": "2122232425262728292a2b2c2d2e2f303132333435363738",
+      "plaintext_utf8": "{\"type\":\"notification.dismissed\",\"notification_uids\":[\"dev_01JABCDEF1234567890:1764060000123:a8f3c1\",\"dev_01JXYZ9876543210987:1764060001456:b7e2d0\"],\"dismissed_at\":1764060045000,\"dismissed_by_device_name\":\"MacBook Pro\"}",
+      "ciphertext_base64url": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OZ_VMu07cmdraXZxiQR0WehqNcFS6zYSTCQRvkxbC6w3_Gp-ZXAwi0CBavp6W6bcSckmfwDWRa8G6KxjuzQbBjjOErkt5fT3TvboJyWJYZv1qESAnUj-d_X1QzU_ed61uNcSRIFU1AQvHnmPyJXuV6zSRx8vXWWvci8Ec5zy7WhWYOKcC5Z80fKQ4uzPrbMsUJAPxjoxCkaYZdIy5FqA2ezDGWNAJgKMyXl6r58KRkvEzhQPZsO6sSqBshKMbtuJNmbdDB09YoItJHjERQYBoruLJE5P7cnCzY4ZeM6ouNN8M3J81RmfM83QUw",
+      "ciphertext_hex": "2122232425262728292a2b2c2d2e2f303132333435363738399fd532ed3b72676b69767189047459e86a35c152eb36124c2411be4c5b0bac37fc6a7e6570308b40816afa7a5ba6dc49c9267f00d645af06e8ac63bb341b0638ce12b92de5f4f74ef6e8272589619bf5a844809d48fe77f5f543353f79deb5b8d712448154d4042f1e798fc895ee57acd2471f2f5d65af722f04739cf2ed685660e29c0b967cd1f290e2eccfadb32c50900fc63a310a469865d232e45a80d9ecc319634026028cc9797aaf9f0a464bc4ce140f66c3bab12a81b2128c6edb893666dd0c1d3d62822d2478c4450601a2bb8b244e4fedc9c2cd8e1978cea8b8d37c33727cd5199f33cdd053"
+    }
+  ],
+  "blob_vectors": [
+    {
+      "name": "icon_webp_blob",
+      "blob_id": "icon_e3b0c44298fc1c14",
+      "aad": "v1|blob|icon_e3b0c44298fc1c14",
+      "nonce_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7",
+      "plaintext_hex": "524946461a000000574542505650384c0d0000002f0000000000000000000000",
+      "ciphertext_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b79a094b90c459ab12339b582eb1744ae18ff483155a7ece54303b0fdae9bd09136af166b9ac4328a1e68ba35d09a537d0"
+    },
+    {
+      "name": "image_attachment_blob",
+      "blob_id": "img_01JABCDEF1234567890",
+      "aad": "v1|blob|img_01JABCDEF1234567890",
+      "nonce_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7",
+      "plaintext_hex": "deadbeef00112233445566778899aabbccddeeff",
+      "ciphertext_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7f6822c530643117f495b0c6dfc2db1e100d401fc372818c312d5cf5d77f021aec48d4096"
+    }
+  ],
+  "pairing_uri_vectors": {
+    "valid": [
+      {
+        "name": "standard_https_uri",
+        "uri": "allnotify://pair?v=1&url=https%3A%2F%2Fnotify.example.com&token=tok_01JABCDEF1234567890&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&device_id=dev_01JABCDEF1234567890&name=Pixel%209",
+        "expected": {
+          "v": 1,
+          "url": "https://notify.example.com",
+          "ws_url": "wss://notify.example.com/v1/ws",
+          "token": "tok_01JABCDEF1234567890",
+          "key_base64url": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+          "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+          "device_id": "dev_01JABCDEF1234567890",
+          "device_name": "Pixel 9"
+        }
+      },
+      {
+        "name": "custom_port_subpath_and_trailing_slash",
+        "uri": "allnotify://pair?v=1&url=https%3A%2F%2Fnotify.example.com%3A8443%2Frelay%2F&token=tok_mac_999&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&device_id=dev_01JMACBOOKPRO00000001&name=Farras%27s%20MacBook%20Pro",
+        "expected": {
+          "v": 1,
+          "url": "https://notify.example.com:8443/relay",
+          "ws_url": "wss://notify.example.com:8443/relay/v1/ws",
+          "token": "tok_mac_999",
+          "key_base64url": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+          "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+          "device_id": "dev_01JMACBOOKPRO00000001",
+          "device_name": "Farras's MacBook Pro"
+        }
+      },
+      {
+        "name": "base64url_key_with_dash_and_underscore",
+        "uri": "allnotify://pair?v=1&url=https%3A%2F%2Fnotify.example.com&token=tok_win_001&key=-_z9_v8AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRo&device_id=dev_01JWINPC000000000001&name=Work%20PC",
+        "expected": {
+          "v": 1,
+          "url": "https://notify.example.com",
+          "ws_url": "wss://notify.example.com/v1/ws",
+          "token": "tok_win_001",
+          "key_base64url": "-_z9_v8AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRo",
+          "key_hex": "fbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a",
+          "device_id": "dev_01JWINPC000000000001",
+          "device_name": "Work PC"
+        }
+      }
+    ],
+    "invalid": [
+      {
+        "name": "wrong_scheme",
+        "uri": "https://pair?v=1&url=https%3A%2F%2Fnotify.example.com&token=tok&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&device_id=dev_1&name=Phone",
+        "reason": "scheme must be allnotify"
+      },
+      {
+        "name": "wrong_host",
+        "uri": "allnotify://connect?v=1&url=https%3A%2F%2Fnotify.example.com&token=tok&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&device_id=dev_1&name=Phone",
+        "reason": "host must be pair"
+      },
+      {
+        "name": "unexpected_pair_path",
+        "uri": "allnotify://pair/extra?v=1&url=https%3A%2F%2Fnotify.example.com&token=tok&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&device_id=dev_1&name=Phone",
+        "reason": "pairing uri must not include a non-empty path"
+      },
+      {
+        "name": "unsupported_version",
+        "uri": "allnotify://pair?v=2&url=https%3A%2F%2Fnotify.example.com&token=tok&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&device_id=dev_1&name=Phone",
+        "reason": "only protocol version 1 is supported"
+      },
+      {
+        "name": "missing_version",
+        "uri": "allnotify://pair?url=https%3A%2F%2Fnotify.example.com&token=tok&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&device_id=dev_1&name=Phone",
+        "reason": "v parameter is required"
+      },
+      {
+        "name": "insecure_http_url",
+        "uri": "allnotify://pair?v=1&url=http%3A%2F%2Fnotify.example.com&token=tok&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&device_id=dev_1&name=Phone",
+        "reason": "server url must use https"
+      },
+      {
+        "name": "url_with_query",
+        "uri": "allnotify://pair?v=1&url=https%3A%2F%2Fnotify.example.com%3Ffoo%3Dbar&token=tok&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&device_id=dev_1&name=Phone",
+        "reason": "server url must not contain query parameters"
+      },
+      {
+        "name": "url_with_fragment",
+        "uri": "allnotify://pair?v=1&url=https%3A%2F%2Fnotify.example.com%23frag&token=tok&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&device_id=dev_1&name=Phone",
+        "reason": "server url must not contain a fragment"
+      },
+      {
+        "name": "url_with_userinfo",
+        "uri": "allnotify://pair?v=1&url=https%3A%2F%2Fuser%3Apass%40notify.example.com&token=tok&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&device_id=dev_1&name=Phone",
+        "reason": "server url must not contain userinfo"
+      },
+      {
+        "name": "short_key",
+        "uri": "allnotify://pair?v=1&url=https%3A%2F%2Fnotify.example.com&token=tok&key=AQIDBA&device_id=dev_1&name=Phone",
+        "reason": "decoded key must be exactly 32 bytes"
+      },
+      {
+        "name": "padded_key",
+        "uri": "allnotify://pair?v=1&url=https%3A%2F%2Fnotify.example.com&token=tok&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=&device_id=dev_1&name=Phone",
+        "reason": "key must be unpadded base64url"
+      },
+      {
+        "name": "standard_base64_key",
+        "uri": "allnotify://pair?v=1&url=https%3A%2F%2Fnotify.example.com&token=tok&key=%2B%2Fz9%2Fv8AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRo&device_id=dev_1&name=Phone",
+        "reason": "key must use base64url alphabet (- and _), not standard base64 (+ and /)"
+      },
+      {
+        "name": "missing_token",
+        "uri": "allnotify://pair?v=1&url=https%3A%2F%2Fnotify.example.com&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&device_id=dev_1&name=Phone",
+        "reason": "token parameter is required"
+      },
+      {
+        "name": "missing_device_id",
+        "uri": "allnotify://pair?v=1&url=https%3A%2F%2Fnotify.example.com&token=tok&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&name=Phone",
+        "reason": "device_id parameter is required"
+      },
+      {
+        "name": "missing_name",
+        "uri": "allnotify://pair?v=1&url=https%3A%2F%2Fnotify.example.com&token=tok&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&device_id=dev_1",
+        "reason": "name parameter is required"
+      }
+    ]
+  }
+}

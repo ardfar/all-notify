@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://all-notify.local/schemas/v1/notification_dismissed.schema.json",
+  "title": "All-Notify Inner Payload: notification.dismissed (v1)",
+  "description": "Decrypted dismissal payload broadcast when a user dismisses a notification on any device.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "notification_uids",
+    "dismissed_at",
+    "dismissed_by_device_name"
+  ],
+  "properties": {
+    "type": { "const": "notification.dismissed" },
+    "notification_uids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "dismissed_at": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dismissed_by_device_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  }
+}

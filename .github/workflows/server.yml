@@ -1,0 +1,83 @@
+name: Server CI & Packaging
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "server/**"
+      - "protocol/**"
+      - ".github/workflows/server.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Protocol & Server Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Verify protocol schemas & deterministic test vectors
+        working-directory: protocol
+        run: go test -v ./...
+
+      - name: Run server go vet & race-detector tests
+        working-directory: server
+        run: |
+          go vet ./...
+          go test -race -v ./...
+
+  build:
+    name: Static Linux Binaries & Docker Image
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Cross-compile static Linux amd64 & arm64 binaries
+        working-directory: server
+        run: |
+          mkdir -p ../dist/server
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
+            -o ../dist/server/all-notify-server-linux-amd64 ./cmd/all-notify-server
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" \
+            -o ../dist/server/all-notify-server-linux-arm64 ./cmd/all-notify-server
+          (cd ../dist/server && sha256sum all-notify-server-linux-* > SHA256SUMS.txt)
+
+      - name: Upload static Linux binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-notify-server-linux
+          path: dist/server/
+          if-no-files-found: error
+
+      - name: Build & smoke-test Docker image
+        run: |
+          docker build -t all-notify-server:ci ./server
+          KEY="$(docker run --rm all-notify-server:ci keygen)"
+          test -n "$KEY"
+          CID="$(docker run -d -p 127.0.0.1:18080:8080 all-notify-server:ci)"
+          trap 'docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/healthz | grep -q '"ok"'; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "Server container failed /healthz check" >&2
+          docker logs "$CID" >&2
+          exit 1

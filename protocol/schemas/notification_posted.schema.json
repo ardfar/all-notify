@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://all-notify.local/schemas/v1/notification_posted.schema.json",
+  "title": "All-Notify Inner Payload: notification.posted (v1)",
+  "description": "Decrypted notification payload sent from an Android device to all other devices.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "notification_uid",
+    "sender_device_name",
+    "posted_at",
+    "app",
+    "content"
+  ],
+  "properties": {
+    "type": { "const": "notification.posted" },
+    "notification_uid": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "sender_device_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "posted_at": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["package", "name"],
+      "dependentRequired": {
+        "icon_blob_id": ["icon_sha256"]
+      },
+      "properties": {
+        "package": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "icon_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "icon_blob_id": {
+          "type": "string",
+          "pattern": "^icon_[0-9a-f]{16}$"
+        }
+      }
+    },
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "body"],
+      "properties": {
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "sub_text": { "type": "string" },
+        "category": { "type": "string" },
+        "group_key": { "type": "string" }
+      }
+    },
+    "attachments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "blob_id",
+          "mime",
+          "width",
+          "height",
+          "size_bytes",
+          "sha256"
+        ],
+        "properties": {
+          "kind": { "const": "image" },
+          "blob_id": {
+            "type": "string",
+            "pattern": "^img_[a-zA-Z0-9_-]{4,60}$"
+          },
+          "mime": {
+            "type": "string",
+            "enum": ["image/webp", "image/jpeg", "image/png"]
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 800
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 800
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 524288
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  }
+}

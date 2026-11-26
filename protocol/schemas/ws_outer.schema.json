@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://all-notify.local/schemas/v1/ws_outer.schema.json",
+  "title": "All-Notify WebSocket Outer Frame (v1)",
+  "description": "Plaintext routing frames exchanged over /v1/ws between clients and the zero-knowledge VPS relay.",
+  "oneOf": [
+    {
+      "title": "Client -> Server: Relay Encrypted Event",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "event_id", "target", "ciphertext"],
+      "properties": {
+        "op": { "const": "relay" },
+        "event_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "target": { "const": "broadcast" },
+        "ciphertext": {
+          "type": "string",
+          "minLength": 54,
+          "maxLength": 65536,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    },
+    {
+      "title": "Server -> Client: Deliver Encrypted Event",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "seq", "event_id", "sender_device_id", "server_ts", "ciphertext"],
+      "properties": {
+        "op": { "const": "event" },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "sender_device_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "server_ts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ciphertext": {
+          "type": "string",
+          "minLength": 54,
+          "maxLength": 65536,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    },
+    {
+      "title": "Server -> Client: Offline Replay Complete",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "latest_seq"],
+      "properties": {
+        "op": { "const": "replay_complete" },
+        "latest_seq": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    {
+      "title": "Client -> Server: Acknowledge Delivery",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "seq"],
+      "properties": {
+        "op": { "const": "ack" },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    {
+      "title": "Server -> Client: Protocol Error",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "code", "message"],
+      "properties": {
+        "op": { "const": "error" },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    }
+  ]
+}

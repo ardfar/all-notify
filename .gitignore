@@ -1,0 +1,15 @@
+# OS
+.DS_Store
+
+# Secrets & signing material
+.env
+*.keystore
+*.jks
+
+# Server runtime data & local builds
+/server/data/
+/server/all-notify-server
+/server/all-notify-server.exe
+
+# Release outputs
+/dist/
