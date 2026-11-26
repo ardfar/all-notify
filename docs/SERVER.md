@@ -92,7 +92,13 @@ CREATE INDEX idx_blobs_expires ON blobs(expires_at);
 
 ---
 
+> **Phase 5 (Pairing Web UI)** adds `pairing_codes`, `admin_credentials`, `admin_sessions`, `settings` tables and `devices.can_add_devices`, applied via a `PRAGMA user_version` migration. See [PAIRING.md §5](./PAIRING.md#5-server-data-model).
+
+---
+
 ## 5. CLI Commands
+
+> **Phase 5 changes**: `token create` loses `--key`/`--url` (no more `K_master` on the VPS) and gains `--can-add-devices`; new `pair create` and `admin reset-password` commands. Preferred pairing path becomes the web admin page at `/admin`. See [PAIRING.md §6](./PAIRING.md#6-cli-changes).
 
 ```bash
 # Start the HTTP/WS server
@@ -129,6 +135,8 @@ all-notify-server token revoke dev_01J...
 | `ALLNOTIFY_MAX_TOTAL_BLOB_MB` | `256` | Hard cap on total blob disk usage (evicts oldest on overflow) |
 
 Health check endpoint: `GET /healthz` returns `200 OK` (`{"status":"ok"}`) without auth.
+
+Phase 5 adds `ALLNOTIFY_ADMIN_ENABLED`, `ALLNOTIFY_PAIRING_CODE_TTL_MINUTES`, `ALLNOTIFY_ADMIN_SESSION_MINUTES`, and `ALLNOTIFY_TRUST_PROXY` — see [PAIRING.md §7](./PAIRING.md#7-configuration). Reverse proxies must also forward `/admin`, `/v1/pair/claim`, `/v1/me`, and `/v1/pairing-codes`.
 
 ---
 

@@ -53,7 +53,15 @@ allnotify://pair?v=1&url=https%3A%2F%2Fnotify.example.com&token=<device_token>&k
 | `device_id` | Server-assigned stable ID for this device (e.g. `dev_01J...`). |
 | `name` | Human-readable label (e.g. `Pixel 9`, `MacBook Pro`). |
 
-> **Security**: The VPS CLI generates `token` and `device_id`. `K_master` is never stored on the VPS; you either pass it locally when rendering a QR code or paste/scan it from an already-paired device.
+> **Security**: `K_master` is never stored on or sent to the VPS. QR codes are rendered in the browser (web admin) or on a trusted device, never on the server.
+
+### Pairing Link v2 (One-Time Code) — Phase 5
+
+```text
+allnotify://pair?v=2&url=<urlenc_https_url>&code=<pc_xxxxxxxxxxxxxxxxxxxxxx>&key=<base64url_K_master>&name=<urlenc_name>
+```
+
+v2 replaces `token` + `device_id` with a single-use, 10-minute `code` redeemed via `POST /v1/pair/claim`. Clients MUST accept both `v=1` and `v=2`. Full rules, Key Check Value (KCV, `info="all-notify:v1:kcv"`), claim API, and test-vector additions: see [PAIRING.md](./PAIRING.md).
 
 ---
 

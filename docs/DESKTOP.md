@@ -72,7 +72,8 @@ Because macOS and Windows handle native notification dismissal differently, the 
 
 ## 5. Pairing & Settings UI
 
-- **First-run setup**: Paste `allnotify://pair?...` URI (or drop/upload a QR code image). Validates URI, stores `K_master` and `device_token` in OS Keychain, connects immediately.
+- **First-run setup**: Paste `allnotify://pair?...` URI (or drop/upload a QR code image). Accepts v1 (token) and v2 (one-time code → `POST /v1/pair/claim`). Stores `K_master` and `device_token` in OS Keychain, connects immediately.
+- **Add device** (Phase 5, trusted devices only via `GET /v1/me`): create a one-time pairing code, render the v2 QR locally with the `qrcode` crate, countdown + claim status, window content protection while visible. See [PAIRING.md §8](./PAIRING.md#8-client-changes).
 - **Settings panel**:
   - Server URL & Device Name (read-only from pairing, with "Unpair / Reset" button).
   - Launch at login toggle.

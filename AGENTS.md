@@ -33,6 +33,7 @@ Reach for the matching doc before designing or editing code; `docs/` is the sing
 | Go relay server, SQLite queue, CLI (`keygen`/`token`), Docker/Caddy | `docs/SERVER.md` |
 | Kotlin Android app, `NotificationListenerService`, Foreground Service, Room | `docs/ANDROID.md` |
 | Tauri desktop app, macOS `UNUserNotificationCenter`, Windows Toast, tray UI | `docs/DESKTOP.md` |
+| Web admin page, one-time pairing codes, pairing link v2, trusted "Add device", admin auth | `docs/PAIRING.md` |
 | Phase order, milestones, risk mitigations | `docs/ROADMAP.md` |
 | Next engineering task, target file paths, phase exit commands | `docs/IMPLEMENTATION_PLAN.md` |
 

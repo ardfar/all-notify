@@ -190,3 +190,46 @@ cd desktop && npm run tauri build
 3. **4.3 — VPS Production Rollout** (Docker Compose healthcheck, `server/.env.example`, and rollout runbook ready in `docs/SERVER.md`)
    - [ ] Deploy `server/` via `docker-compose.yml` on your VPS with TLS (`wss://`).
    - [ ] Generate `K_master`, mint tokens/QR codes for each phone and laptop, pair all devices, and monitor server RAM/disk and Android battery usage over 48 hours.
+
+---
+
+## Phase 5: Pairing Web UI & One-Time Pairing Codes
+
+**Goal**: Pair any device from a browser or a trusted device with no SSH, while the VPS stays zero-knowledge. Spec: [PAIRING.md](./PAIRING.md) (single source of truth for API, schema, and rules).
+
+**Order**: 5.1 first (it freezes vectors + API). Then 5.2 and 5.3 in parallel. Then 5.4.
+
+### 5.1 — Protocol v2 + Server + Admin UI (`protocol/`, `server/`)
+1. **Vectors**: extend `protocol/cmd/genvectors/main.go` → `test_vectors.json` with `kdf.kcv_info`/`kdf.kcv_hex` and v2 `pairing_uri_vectors` (valid + invalid per PAIRING.md §2). Existing v1 entries unchanged. Update `protocol/vectors_test.go` and `server/vectors_test.go`.
+2. **Migration**: replace one-shot `schema.sql` exec with `PRAGMA user_version` migrations in `server/internal/store/` (migration 1 = PAIRING.md §5). Test: open a v0 DB with existing devices → migrate → old tokens still authenticate.
+3. **Pairing codes** (`server/internal/pairing/`): create (hash only), list, cancel, atomic claim, reaper cleanup. Concurrent-claim race test.
+4. **Admin auth** (`server/internal/admin/`): argon2id, first-boot random password print-once, `must_change` gate, SQLite sessions, login rate limiter (respect `ALLNOTIFY_TRUST_PROXY`), CSRF (`X-AllNotify-Admin` + `Origin`), security headers.
+5. **API** (`server/internal/api/`): `POST /v1/pair/claim` (rate-limited), `GET /v1/me`, `POST|GET /v1/pairing-codes` (trusted-only), `/admin/api/*` per PAIRING.md §4. Revoke closes live WS through the hub.
+6. **Admin UI** (`server/internal/admin/web/`, `go:embed`): vanilla `index.html`/`admin.css`/`admin.js` + vendored `qrcode.min.js` (pinned, SHA-256 in header). Views per PAIRING.md §8. KCV via WebCrypto; key in a JS variable only.
+7. **CLI**: remove `token create --key/--url`; add `--can-add-devices`, `pair create`, `admin reset-password`.
+8. **Docs**: update `docs/SERVER.md` rollout checklist + Option C to the `/admin` flow; add new env vars to `server/.env.example`.
+
+**Verify**: `cd protocol && go test ./... && cd ../server && go test -race -v ./...`, `docker compose up` → `/admin` login with logged password, forced change, generate key, create code, claim with `curl`, confirm grep for the key in `data/` + logs finds nothing.
+
+### 5.2 — Android (`android/`) — after 5.1
+1. `PairingUriParser` v2 + `CryptoVectorsTest` on new vectors (v1 still passes).
+2. Claim flow (`BlobApiClient`/new `PairingApiClient` on OkHttp) → `SecureCredentialStore`; replace-pairing confirm.
+3. `GET /v1/me` on connect; persist `can_add_devices` in `kv_state`.
+4. Compose **Add device** screen (trusted-only): form → create code → ZXing QR + share link + countdown + 3 s status poll; `FLAG_SECURE`. Remove old "copy group key/URI".
+5. `GoServerInteropTest`: claim happy path, reused/expired code `410`, untrusted `403`, trusted device creates code → second client claims → connects and receives a relayed event.
+
+**Verify**: `cd android && ./gradlew testDebugUnitTest lintDebug assembleDebug`; on-device: pair via web QR, Add device from phone.
+
+### 5.3 — Desktop (`desktop/`) — after 5.1, parallel with 5.2
+1. `crypto.rs` v2 parser + vector tests.
+2. Claim flow in Rust (`reqwest`) → keyring; replace-pairing confirm in UI.
+3. `GET /v1/me` on connect; persist `can_add_devices` in `pairing.json`.
+4. **Add device** view (trusted-only): Tauri command → create code → `qrcode` SVG + link → countdown + poll; `set_content_protected(true)` while visible.
+5. Extend `tests/e2e_matrix.rs` with a pairing scenario: admin code → desktop claim; trusted desktop code → second client claim → relay works; untrusted `403`.
+
+**Verify**: `cd desktop/src-tauri && cargo clippy --all-targets -- -D warnings && cargo test`, `npm run tauri build`.
+
+### 5.4 — Integration & Rollout
+- [ ] Manual matrix (PAIRING.md §9) on the real VPS.
+- [ ] Existing v1-paired vivo phone still connects after server upgrade (migration).
+- [ ] Update `centmem` `project.status` → Phase 5 complete.

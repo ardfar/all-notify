@@ -90,4 +90,5 @@ Captures local notifications and executes remote dismissals.
 
 1. **Status & History (Home)**: Connection status pill, quick **Pause/Resume** switch, search bar, chronological feed of mirrored & sent notifications (with app icons, device badges, image thumbnails, and swipe-to-dismiss).
 2. **App Filters**: Searchable list of installed apps with enable/disable toggle and "Allow ongoing" switch.
-3. **Settings & Pairing**: Pair via QR / URI, view connected device name & server URL, copy group key/URI to pair another device, clear local history, battery/permission health checks.
+3. **Settings & Pairing**: Pair via QR / URI (v1 and v2), view connected device name & server URL, clear local history, battery/permission health checks.
+4. **Add Device** (Phase 5, shown only when `GET /v1/me` reports `can_add_devices=true`): create a one-time pairing code, render the v2 QR locally with ZXing, countdown + claim status, `FLAG_SECURE`. Replaces the old "copy group key/URI" helper. See [PAIRING.md §8](./PAIRING.md#8-client-changes).

@@ -13,6 +13,7 @@ This roadmap tracks **All-Notify** from initial protocol freeze to a daily-drive
 | **Phase 2** | Native Kotlin Android App | `android/` sideloadable APK (capture, mirror, dismiss, icons/images, history) | Phase 0, Phase 1 | Two Android devices mirror text/icons/images and sync dismissals bidirectionally via VPS. |
 | **Phase 3** | Tauri Desktop App (Win + Mac) | `desktop/` tray/menu-bar app for macOS & Windows | Phase 0, Phase 1 | Android notifications appear natively on macOS & Windows; desktop Dismiss clears Android & other devices. |
 | **Phase 4** | E2E Hardening & Packaging | Full cross-device E2E matrix, GitHub Actions builds, VPS deployment | Phase 2, Phase 3 | All E2E test scenarios pass; automated builds produce Linux server, APK, `.dmg`, and `.msi`. |
+| **Phase 5** | Pairing Web UI | `/admin` web page, one-time pairing codes (link v2), trusted-device "Add device" on Android + desktop | Phase 4 | Fresh VPS → pair all devices from browser/trusted device with zero SSH; v1-paired devices unaffected. See [PAIRING.md](./PAIRING.md). |
 
 ---
 
@@ -27,7 +28,14 @@ flowchart LR
     P1 --> P3["Phase 3\nDesktop (Tauri)"]
     P2 --> P4["Phase 4\nE2E & Packaging"]
     P3 --> P4
+    P4 --> P51["5.1 Protocol v2 + Server + Admin UI"]
+    P51 --> P52["5.2 Android Add device"]
+    P51 --> P53["5.3 Desktop Add device"]
+    P52 --> P54["5.4 E2E & Docs"]
+    P53 --> P54
 ```
+
+Phase 5: **5.1** must land first (vectors + API contract); **5.2** and **5.3** then run in parallel.
 
 ---
 
@@ -64,6 +72,12 @@ flowchart LR
 - **M4.2**: Set up GitHub Actions CI/CD to build Linux `amd64`/`arm64` server binary/Docker image, Android APK, macOS `.dmg`, and Windows `.msi`/`.exe`.
 - **M4.3**: Deploy to personal VPS and run 48-hour real-world soak test (battery, memory, reconnect resilience).
 
+### Phase 5 — Pairing Web UI
+- **M5.1**: Protocol v2 pairing link + KCV test vectors; server migration, one-time codes, claim API, admin auth (random first-boot password, forced change, rate limits, CSRF), admin JSON API, embedded `/admin` UI, CLI changes.
+- **M5.2**: Android v2 parser + claim flow, `GET /v1/me`, trusted-only Add device screen (ZXing QR, `FLAG_SECURE`).
+- **M5.3**: Desktop v2 parser + claim flow, `GET /v1/me`, trusted-only Add device view (`qrcode` SVG, content protection).
+- **M5.4**: E2E pairing scenarios against real server, docs/runbook update (SERVER.md rollout uses `/admin`).
+
 ---
 
 ## Key Risks & Mitigations
@@ -74,6 +88,7 @@ flowchart LR
 | **Cross-language E2EE mismatch** (Go vs. Kotlin vs. Rust) | Decryption failures between devices | Mandatory `protocol/test_vectors.json` run in every language's unit test suite before any integration work. |
 | **macOS swipe-dismiss silence** | Swiping a macOS banner doesn't fire an app callback | Provide an explicit **Dismiss** action button on every macOS notification + one-click dismiss in the menu-bar popover. |
 | **Popup storm after laptop sleep** | Dozens of stale popups fire on wake | Buffer replayed events until `replay_complete`; archive already-dismissed items silently; collapse >5 still-active items into a summary popup. |
+| **Admin page takeover / key leak via web UI** | Attacker pairs rogue device or steals `K_master` | Random first-boot password + forced change, argon2id, login rate limit, SameSite=Strict + CSRF header, strict CSP, key only in tab memory, single-use 10-min hashed codes, trusted devices limited to code creation. |
 | **Large media / spammy apps exhausting VPS disk** | VPS storage fills up or WS stalls | Compress images on Android (`≤800px`, `≤512 KB`), enforce 550 KB server cap, 24h TTL reaper, and `256 MB` hard total-blob LRU cap. |
 
 ---

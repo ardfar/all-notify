@@ -39,5 +39,6 @@ all-notify/
 | [SERVER.md](./SERVER.md) | Go relay server architecture, SQLite schema, CLI commands, and Docker/Caddy/Nginx deployment. |
 | [ANDROID.md](./ANDROID.md) | Kotlin app architecture, permissions, NotificationListener capture, Foreground Service, and Room DB. |
 | [DESKTOP.md](./DESKTOP.md) | Tauri tray app architecture, macOS/Windows native notification dismissal, SQLite history, and UI views. |
+| [PAIRING.md](./PAIRING.md) | Phase 5: web admin page, one-time pairing codes (link v2), trusted-device "Add device", admin auth, and KCV. |
 | [ROADMAP.md](./ROADMAP.md) | Phased delivery roadmap, dependency graph, milestones, risk register, and post-v1 backlog. |
 | [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) | Detailed step-by-step engineering tasks, target file paths, and verification commands per phase. |
