@@ -24,6 +24,9 @@ const els = {
   viewFeed: document.getElementById("view-feed"),
   authErrorBanner: document.getElementById("auth-error-banner"),
   btnAuthSettings: document.getElementById("btn-auth-settings"),
+  notifPermBanner: document.getElementById("notif-perm-banner"),
+  notifPermText: document.getElementById("notif-perm-text"),
+  btnNotifPermAction: document.getElementById("btn-notif-perm-action"),
   searchInput: document.getElementById("search-input"),
   feedList: document.getElementById("feed-list"),
 
@@ -33,6 +36,10 @@ const els = {
   setServerUrl: document.getElementById("set-server-url"),
   toggleAutostart: document.getElementById("toggle-autostart"),
   togglePrivacy: document.getElementById("toggle-privacy"),
+  setNotifPerm: document.getElementById("set-notif-perm"),
+  btnEnableOsNotif: document.getElementById("btn-enable-os-notif"),
+  btnTestOsNotif: document.getElementById("btn-test-os-notif"),
+  notifTestFeedback: document.getElementById("notif-test-feedback"),
   inputRetDays: document.getElementById("input-ret-days"),
   inputRetRows: document.getElementById("input-ret-rows"),
   btnSaveRetention: document.getElementById("btn-save-retention"),
@@ -76,6 +83,7 @@ let addCountdownTimer = null;
 let addQrFeedbackTimer = null;
 let searchTimer = null;
 let feedbackTimer = null;
+let notifTestTimer = null;
 let feedRequestSeq = 0;
 let confirmTimers = { clearHistory: null, unpair: null };
 
@@ -192,12 +200,43 @@ function renderHeaderAndViews() {
     !paired || appState.status !== "unauthorized"
   );
 
+  const notifPerm = (appState && appState.notification_permission) || "authorized";
+  const showPermBanner = paired && notifPerm !== "authorized";
+  els.notifPermBanner.classList.toggle("hidden", !showPermBanner);
+  if (notifPerm === "denied") {
+    els.notifPermText.textContent = "System notifications are disabled for All-Notify.";
+    els.btnNotifPermAction.textContent = "Open Settings";
+    els.btnNotifPermAction.classList.remove("hidden");
+  } else if (notifPerm === "not_determined") {
+    els.notifPermText.textContent = "Allow system notifications to see banners.";
+    els.btnNotifPermAction.textContent = "Allow";
+    els.btnNotifPermAction.classList.remove("hidden");
+  } else if (notifPerm === "unavailable") {
+    els.notifPermText.textContent = "System notifications require running the installed All-Notify.app.";
+    els.btnNotifPermAction.classList.add("hidden");
+  }
+
   if (paired) {
     els.setDeviceName.textContent = appState.device_name || "—";
     els.setServerUrl.textContent = appState.server_url || "—";
     els.toggleAutostart.checked = Boolean(appState.autostart);
     els.togglePrivacy.checked = Boolean(appState.privacy_mode);
     els.cardAddDevice.classList.toggle("hidden", !canAdd);
+    if (notifPerm === "authorized") {
+      els.setNotifPerm.textContent = "Allowed";
+      els.btnEnableOsNotif.classList.add("hidden");
+    } else if (notifPerm === "denied") {
+      els.setNotifPerm.textContent = "Disabled in System Settings";
+      els.btnEnableOsNotif.textContent = "Open Settings";
+      els.btnEnableOsNotif.classList.remove("hidden");
+    } else if (notifPerm === "not_determined") {
+      els.setNotifPerm.textContent = "Permission needed";
+      els.btnEnableOsNotif.textContent = "Allow notifications";
+      els.btnEnableOsNotif.classList.remove("hidden");
+    } else {
+      els.setNotifPerm.textContent = "Unavailable";
+      els.btnEnableOsNotif.classList.add("hidden");
+    }
     if (!showingSettings) {
       syncRetentionInputs();
     }
@@ -677,6 +716,35 @@ els.toggleAutostart.addEventListener("change", async () => {
 els.togglePrivacy.addEventListener("change", async () => {
   await invoke("set_privacy_mode", { enabled: els.togglePrivacy.checked });
   await refreshState();
+});
+
+function showNotifTestFeedback(msg, isError = false) {
+  els.notifTestFeedback.textContent = msg;
+  els.notifTestFeedback.classList.toggle("error", isError);
+  els.notifTestFeedback.classList.remove("hidden");
+  clearTimeout(notifTestTimer);
+  notifTestTimer = setTimeout(() => els.notifTestFeedback.classList.add("hidden"), 3500);
+}
+
+async function handleRequestNotifPermission() {
+  try {
+    await invoke("request_notification_permission");
+    await refreshState();
+  } catch (err) {
+    showNotifTestFeedback(String(err), true);
+  }
+}
+
+els.btnNotifPermAction.addEventListener("click", handleRequestNotifPermission);
+els.btnEnableOsNotif.addEventListener("click", handleRequestNotifPermission);
+
+els.btnTestOsNotif.addEventListener("click", async () => {
+  try {
+    await invoke("send_test_notification");
+    showNotifTestFeedback("Test notification sent.", false);
+  } catch (err) {
+    showNotifTestFeedback(String(err), true);
+  }
 });
 
 function showSettingsFeedback(msg) {

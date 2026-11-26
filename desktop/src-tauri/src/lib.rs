@@ -22,7 +22,9 @@ use crate::crypto::{
     build_pairing_uri_v2, compute_kcv, decode_qr_from_image_bytes, parse_pairing_link,
     render_qr_svg, CredentialManager, KeyringSecretStore, PairingConfig, PairingLink,
 };
-use crate::notifier::{create_platform_notifier, DismissAction, PlatformNotifier};
+use crate::notifier::{
+    create_platform_notifier, DismissAction, NotificationPermission, PlatformNotifier,
+};
 use crate::pairing::{
     build_http_client, claim_pairing_code, create_pairing_code, current_desktop_platform,
     fetch_device_me, list_pairing_codes, PairingCodeSummary,
@@ -66,6 +68,7 @@ struct PublicAppState {
     autostart: bool,
     unread_count: usize,
     retention: RetentionSettings,
+    notification_permission: NotificationPermission,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -305,6 +308,7 @@ fn get_app_state(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<Publ
     let unread_count = state.db.count_active().map_err(|e| e.to_string())?;
     let retention = state.db.retention_settings().map_err(|e| e.to_string())?;
     let autostart = app.autolaunch().is_enabled().unwrap_or(false);
+    let notification_permission = state.notifier.permission_status();
 
     Ok(PublicAppState {
         paired: pairing.is_some(),
@@ -318,6 +322,7 @@ fn get_app_state(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<Publ
         autostart,
         unread_count,
         retention,
+        notification_permission,
     })
 }
 
@@ -595,6 +600,45 @@ fn set_file_dialog_open(state: State<'_, Arc<AppState>>, open: bool) {
 }
 
 #[tauri::command]
+async fn request_notification_permission(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<NotificationPermission, String> {
+    let notifier = Arc::clone(&state.notifier);
+    let perm = tokio::task::spawn_blocking(move || notifier.request_permission_or_open_settings())
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("state:updated", ());
+    Ok(perm)
+}
+
+#[tauri::command]
+fn send_test_notification(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    match state.notifier.permission_status() {
+        NotificationPermission::Denied => {
+            return Err(
+                "System notifications are disabled for All-Notify. Enable them in System Settings → Notifications."
+                    .to_string(),
+            );
+        }
+        NotificationPermission::Unavailable => {
+            return Err(
+                "System notifications are unavailable (app is not running from a signed .app bundle)."
+                    .to_string(),
+            );
+        }
+        NotificationPermission::NotDetermined => {
+            return Err(
+                "Grant notification permission first by clicking Allow notifications.".to_string(),
+            );
+        }
+        NotificationPermission::Authorized => {}
+    }
+    state.notifier.show_test();
+    Ok(())
+}
+
+#[tauri::command]
 fn read_icon_data_url(
     state: State<'_, Arc<AppState>>,
     sha256: String,
@@ -681,6 +725,12 @@ pub fn run() {
             let (dismiss_tx, mut dismiss_rx) = mpsc::unbounded_channel::<DismissAction>();
             let notifier: Arc<dyn PlatformNotifier> =
                 Arc::from(create_platform_notifier(cache_dir.clone(), dismiss_tx));
+            let app_for_perm = app.handle().clone();
+            notifier.set_on_permission_changed(Arc::new(move || {
+                let _ = app_for_perm.emit("state:updated", ());
+            }));
+            // Re-check in case permission changed before callback was registered.
+            notifier.refresh_permission();
 
             let credentials =
                 CredentialManager::new(&data_dir, Box::new(KeyringSecretStore::default()));
@@ -723,6 +773,7 @@ pub fn run() {
                     }
                     WindowEvent::Focused(true) => {
                         state_clone.file_dialog_open.store(false, Ordering::SeqCst);
+                        state_clone.notifier.refresh_permission();
                     }
                     WindowEvent::Focused(false)
                         if !state_clone.file_dialog_open.load(Ordering::SeqCst) =>
@@ -784,6 +835,8 @@ pub fn run() {
             set_retention,
             set_autostart,
             set_file_dialog_open,
+            request_notification_permission,
+            send_test_notification,
             read_icon_data_url,
             read_attachment_data_url,
         ])

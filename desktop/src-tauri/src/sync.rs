@@ -468,6 +468,20 @@ pub fn encrypt_dismiss_event(
     Some((event_id, ciphertext))
 }
 
+enum SyncTask {
+    Tokio(JoinHandle<()>),
+    Tauri(tauri::async_runtime::JoinHandle<()>),
+}
+
+impl SyncTask {
+    fn abort(self) {
+        match self {
+            SyncTask::Tokio(handle) => handle.abort(),
+            SyncTask::Tauri(handle) => handle.abort(),
+        }
+    }
+}
+
 /// Handle controlling a running background WebSocket sync loop.
 pub struct SyncHandle {
     shutdown_tx: watch::Sender<bool>,
@@ -476,7 +490,7 @@ pub struct SyncHandle {
     crypto: Option<CryptoEngine>,
     device_id: String,
     device_name: String,
-    task: JoinHandle<()>,
+    task: SyncTask,
 }
 
 impl SyncHandle {
@@ -532,7 +546,7 @@ pub fn spawn_sync_loop(
     let device_id = config.device_id.clone();
     let device_name = config.device_name.clone();
 
-    let task = tokio::spawn(run_sync_loop(
+    let fut = run_sync_loop(
         config,
         Arc::clone(&db),
         blob_cache,
@@ -540,7 +554,11 @@ pub fn spawn_sync_loop(
         observer,
         shutdown_rx,
         Arc::clone(&outbox_notify),
-    ));
+    );
+    let task = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => SyncTask::Tokio(handle.spawn(fut)),
+        Err(_) => SyncTask::Tauri(tauri::async_runtime::spawn(fut)),
+    };
 
     SyncHandle {
         shutdown_tx,
@@ -1674,7 +1692,7 @@ mod tests {
             crypto: Some(crypto.clone()),
             device_id: "dev_mac".to_string(),
             device_name: "MacBook Pro".to_string(),
-            task: tokio::spawn(async {}),
+            task: SyncTask::Tokio(tokio::spawn(async {})),
         };
 
         let mut uids = vec![String::new(), "uid_0".to_string()];
@@ -1885,5 +1903,32 @@ mod tests {
             "Revoked reconnect must not enter Reconnecting loop"
         );
         handle2.stop();
+    }
+
+    #[test]
+    fn spawn_sync_loop_works_outside_tokio_context() {
+        // Mirrors Tauri's `.setup()` hook which runs on the main OS thread with no active Tokio reactor.
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let cache = Arc::new(BlobCache::new(dir.path(), 16).unwrap());
+        let cfg = PairingConfig {
+            version: 1,
+            server_url: "http://127.0.0.1:1".to_string(),
+            ws_url: "ws://127.0.0.1:1/v1/ws".to_string(),
+            token: "tok_test".to_string(),
+            key_base64url: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
+            key_bytes: [0u8; 32],
+            device_id: "dev_test".to_string(),
+            device_name: "Test Mac".to_string(),
+            can_add_devices: false,
+        };
+        let handle = spawn_sync_loop(
+            cfg,
+            db,
+            cache,
+            Arc::new(crate::notifier::NoopNotifier),
+            Arc::new(NoopObserver),
+        );
+        handle.stop();
     }
 }

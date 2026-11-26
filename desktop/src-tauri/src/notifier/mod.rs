@@ -1,5 +1,7 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 #[cfg(target_os = "macos")]
@@ -10,6 +12,16 @@ mod windows;
 pub const DISMISS_ACTION_ID: &str = "DISMISS_ACTION";
 pub const NOTIFICATION_CATEGORY_ID: &str = "ALL_NOTIFY_MSG";
 pub const SUMMARY_NOTIFICATION_ID: &str = "allnotify_replay_summary";
+pub const TEST_NOTIFICATION_ID: &str = "allnotify_test";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationPermission {
+    Authorized,
+    Denied,
+    NotDetermined,
+    Unavailable,
+}
 
 #[derive(Debug, Clone)]
 pub struct OsNotification {
@@ -128,6 +140,32 @@ pub trait PlatformNotifier: Send + Sync {
     fn show_summary(&self, unread_count: usize);
     fn clear(&self, row_id: i64);
     fn clear_all(&self);
+
+    fn show_test(&self) {
+        self.show(&OsNotification {
+            id: TEST_NOTIFICATION_ID.to_string(),
+            row_id: 0,
+            app_name: "All-Notify".to_string(),
+            sender_label: "Desktop".to_string(),
+            title: "All-Notify Test".to_string(),
+            body: "Native desktop notifications are working.".to_string(),
+            icon_path: None,
+            attachment_path: None,
+            silent_update: false,
+        });
+    }
+
+    fn permission_status(&self) -> NotificationPermission {
+        NotificationPermission::Authorized
+    }
+
+    fn refresh_permission(&self) {}
+
+    fn request_permission_or_open_settings(&self) -> NotificationPermission {
+        self.permission_status()
+    }
+
+    fn set_on_permission_changed(&self, _cb: Arc<dyn Fn() + Send + Sync>) {}
 }
 
 /// Headless/fallback notifier used in unit tests and non-macOS/non-Windows environments.

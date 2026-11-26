@@ -73,6 +73,16 @@ jobs:
           npm ci
           npm run tauri build
 
+      - name: Verify macOS app bundle code signature
+        if: matrix.platform == 'macos'
+        run: |
+          APP="desktop/src-tauri/target/release/bundle/macos/All-Notify.app"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          INFO=$(codesign -dv --verbose=4 "$APP" 2>&1)
+          echo "$INFO"
+          echo "$INFO" | grep -q "Identifier=com.allnotify.desktop"
+          echo "$INFO" | grep -q "Info.plist entries="
+
       - name: Upload native desktop installer
         uses: actions/upload-artifact@v4
         with:

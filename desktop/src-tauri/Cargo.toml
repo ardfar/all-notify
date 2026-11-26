@@ -50,7 +50,7 @@ qrcode = "0.14"
 keyring = { version = "3", features = ["apple-native"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSBundle", "NSDictionary", "NSError", "NSObject", "NSSet", "NSString", "NSURL"] }
-objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "bitflags", "block2", "UNError", "UNNotification", "UNNotificationAction", "UNNotificationAttachment", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "bitflags", "block2", "UNError", "UNNotification", "UNNotificationAction", "UNNotificationAttachment", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 block2 = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]

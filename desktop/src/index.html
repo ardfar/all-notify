@@ -67,6 +67,10 @@
         <span>This device token was revoked. Unpair and re-pair to reconnect.</span>
         <button id="btn-auth-settings" class="text-btn">Settings</button>
       </div>
+      <div id="notif-perm-banner" class="warn-banner hidden" role="alert">
+        <span id="notif-perm-text">System notifications are disabled for All-Notify.</span>
+        <button id="btn-notif-perm-action" class="text-btn">Enable</button>
+      </div>
       <div class="search-wrap">
         <input id="search-input" type="search" class="search-input" placeholder="Search title, body, app, or phone..." autocomplete="off" />
       </div>
@@ -106,6 +110,18 @@
           </div>
           <input id="toggle-privacy" type="checkbox" class="switch" />
         </label>
+      </section>
+
+      <section class="settings-card">
+        <div class="kv-row">
+          <span class="kv-label">System notifications</span>
+          <span id="set-notif-perm" class="kv-value">—</span>
+        </div>
+        <div class="confirm-actions">
+          <button id="btn-enable-os-notif" class="primary-btn hidden">Enable</button>
+          <button id="btn-test-os-notif" class="secondary-btn">Send test</button>
+        </div>
+        <div id="notif-test-feedback" class="feedback-text hidden"></div>
       </section>
 
       <section class="settings-card">
