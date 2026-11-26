@@ -10,7 +10,7 @@ The relay server is a lightweight, single-binary **Go** service designed to run 
 - **WebSockets**: `github.com/coder/websocket` (or `gorilla/websocket`)
 - **SQLite**: Pure-Go `modernc.org/sqlite` (zero CGO, trivially cross-compiles static Linux binaries for `amd64`/`arm64`)
 - **HTTP Router**: Go stdlib `net/http` (`http.ServeMux` with method/path routing)
-- **QR Code (CLI)**: `github.com/mdp/qrterminal/v3` (renders pairing QR directly in terminal)
+- **Web Admin UI**: Embedded vanilla HTML/CSS/JS via `go:embed` (`server/internal/admin/web/`) with client-side QR rendering (zero server-side `K_master` handling)
 
 ---
 
@@ -107,12 +107,20 @@ all-notify-server serve --addr :8080 --data-dir /var/lib/all-notify
 # Generate a random 32-byte K_master (prints base64url; NOT saved on server)
 all-notify-server keygen
 
-# Mint a new device token (and optionally print a terminal QR code if --key & --url are passed)
+# Create a one-time v2 pairing code (expires in 10 min; build link locally with K_master or use /admin)
+all-notify-server pair create \
+  --name "Pixel 9" \
+  --platform android \
+  [--can-add-devices]
+
+# Mint a raw device token directly (fallback; --key/--url removed so K_master never touches the VPS)
 all-notify-server token create \
   --name "Pixel 9" \
   --platform android \
-  --url https://notify.example.com \
-  --key "<base64url_K_master>"
+  [--can-add-devices]
+
+# Reset forgotten web admin password (prints fresh one-time password, clears all sessions)
+all-notify-server admin reset-password
 
 # List registered devices & last-seen status
 all-notify-server token list
@@ -151,7 +159,7 @@ Run the binary via `systemd` or Docker bound to `127.0.0.1:8080`, and proxy `/v1
 - Optional `caddy` profile (`--profile tls`) that terminates HTTPS/WSS automatically via Let's Encrypt for your domain.
 
 ### VPS Production Rollout Checklist
-1. Copy `server/.env.example` to `server/.env` and set `ALLNOTIFY_DOMAIN=notify.yourdomain.com` (ensure DNS A/AAAA points to the VPS and TCP ports 80/443 are open).
+1. Copy `server/.env.example` to `server/.env`, set `ALLNOTIFY_DOMAIN=notify.yourdomain.com`, and set `ALLNOTIFY_TRUST_PROXY=true` when behind Caddy/Nginx (ensure DNS A/AAAA points to the VPS and TCP ports 80/443 are open).
 2. Prepare the host data directory for the non-root container user (`allnotify`, UID `10001`), start the stack, and confirm healthy status:
    ```bash
    cd server
@@ -160,29 +168,34 @@ Run the binary via `systemd` or Docker bound to `127.0.0.1:8080`, and proxy `/v1
    docker compose ps
    curl -fsS https://notify.yourdomain.com/healthz
    ```
-3. Generate `K_master` once (keep it in your password manager — **never** save it on the VPS):
+3. Read the one-time initial admin password from the first-boot container logs:
    ```bash
-   K_MASTER="$(docker compose exec -T all-notify-server all-notify-server keygen)"
+   docker compose logs all-notify-server | grep "ADMIN INITIAL PASSWORD"
    ```
-4. Mint a per-device token + pairing QR for each Android phone, Mac, and Windows PC:
+4. Open `https://notify.yourdomain.com/admin` in your browser:
+   - Log in with the initial password and set a strong new admin password (min 12 chars).
+   - Generate a new `K_master` in the browser (or paste an existing v1 key), save it in your password manager, and store only its KCV on the server.
+   - Create one-time pairing codes/QRs for your phones and laptops (optionally mark your primary phone/laptop as **Trusted** to add future devices without opening `/admin`).
+5. **CLI fallback / password reset**:
    ```bash
-   docker compose exec all-notify-server all-notify-server token create \
-     --name "Pixel 9" --platform android \
-     --url "https://notify.yourdomain.com" --key "$K_MASTER"
+   # Reset forgotten admin password (prints fresh one-time password, clears sessions)
+   docker compose exec all-notify-server all-notify-server admin reset-password
+   # Create a one-time pairing code via CLI (build v2 link locally with K_master)
+   docker compose exec all-notify-server all-notify-server pair create --name "Pixel 9" --platform android
    ```
-   Clear your shell history / unset `K_MASTER` once all devices are paired.
-5. **Soak & health checks**: Verify `docker stats --no-stream all-notify-server` (target <50 MB RAM), `du -sh server/data` (bounded by 24h TTL + `256 MB` blob cap), `all-notify-server token list` (`LAST_SEEN` updating), and Android battery usage over 48 hours.
-6. **Rollback / Update**: Pull the new commit or binary, run `docker compose --profile tls up -d --build` (SQLite WAL data in `./data` persists across upgrades); to roll back, check out the previous tag and re-run `up -d --build`.
+6. **Soak & health checks**: Verify `docker stats --no-stream all-notify-server` (target <50 MB RAM), `du -sh server/data` (bounded by 24h TTL + `256 MB` blob cap), `all-notify-server token list` (`LAST_SEEN` updating), and Android battery usage over 48 hours.
+7. **Rollback / Update**: Pull the new commit or binary, run `docker compose --profile tls up -d --build` (SQLite WAL data in `./data` persists across upgrades and migrates automatically); to roll back, check out the previous tag and re-run `up -d --build`.
 
 ### Option C: GitHub Actions + GHCR Automated VPS Deploy
 `.github/workflows/server.yml` builds and publishes `ghcr.io/ardfar/all-notify-server` on pushes to `main` and `v*` tags, then deploys `server/docker-compose.prod.yml` to `/root/all-notify` on the VPS over SSH:
 - **Internal port**: `8083` (`0.0.0.0:8083 -> 8080`, healthcheck `http://127.0.0.1:8083/healthz`).
-- **Reverse proxy note**: When forwarding your domain to `127.0.0.1:8083`, enable WebSocket upgrade headers and set a proxy read timeout `>= 120s` for `/v1/ws`.
+- **Reverse proxy note**: Forward `/v1/ws` (with WebSocket upgrade headers and proxy read timeout `>= 120s`), `/v1/blobs`, `/v1/pair/claim`, `/v1/me`, `/v1/pairing-codes`, and `/admin` to `127.0.0.1:8083`. `docker-compose.prod.yml` defaults `ALLNOTIFY_TRUST_PROXY=true`.
 - **Required GitHub Secrets**: `VPS_HOST`, `VPS_USER`, `VPS_PORT`, `VPS_SSH_KEY`, `VPS_SSH_KNOWN_HOSTS` (with `/root/all-notify/data` owned by UID `10001:10001`).
-- **CLI on GHCR deployment**:
+- **First-boot / admin CLI on GHCR deployment**:
   ```bash
   cd /root/all-notify
-  docker compose -f docker-compose.prod.yml exec all-notify-server all-notify-server keygen
-  docker compose -f docker-compose.prod.yml exec all-notify-server all-notify-server token create \
-    --name "Pixel 9" --platform android --url "https://notify.yourdomain.com" --key "<K_MASTER>"
+  docker compose -f docker-compose.prod.yml logs all-notify-server | grep "ADMIN INITIAL PASSWORD"
+  # Open https://notify.yourdomain.com/admin to set password, configure K_master (client-side), and pair devices.
+  # To reset admin password later:
+  docker compose -f docker-compose.prod.yml exec all-notify-server all-notify-server admin reset-password
   ```

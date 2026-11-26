@@ -7,8 +7,10 @@
     "k_master_base64url": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
     "event_info": "all-notify:v1:event",
     "blob_info": "all-notify:v1:blob",
+    "kcv_info": "all-notify:v1:kcv",
     "k_event_hex": "4b28cea32d93fe9c7bcf2a4efdfa72d5c3c406420e7cbc0adba216fb1582e6c1",
-    "k_blob_hex": "4c609b73104feb86c119ff6098b10bddc4f54ea044bc8a83105c588771456667"
+    "k_blob_hex": "4c609b73104feb86c119ff6098b10bddc4f54ea044bc8a83105c588771456667",
+    "kcv_hex": "6e45cfb9dc71aa12463483fdb61d7a80"
   },
   "event_vectors": [
     {
@@ -93,6 +95,32 @@
           "device_id": "dev_01JWINPC000000000001",
           "device_name": "Work PC"
         }
+      },
+      {
+        "name": "v2_standard_https_uri",
+        "uri": "allnotify://pair?v=2&url=https%3A%2F%2Fnotify.example.com&code=pc_AAECAwQFBgcICQoLDA0ODw&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&name=Pixel%209",
+        "expected": {
+          "v": 2,
+          "url": "https://notify.example.com",
+          "ws_url": "wss://notify.example.com/v1/ws",
+          "code": "pc_AAECAwQFBgcICQoLDA0ODw",
+          "key_base64url": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+          "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+          "device_name": "Pixel 9"
+        }
+      },
+      {
+        "name": "v2_custom_port_subpath_and_url_safe_code",
+        "uri": "allnotify://pair?v=2&url=https%3A%2F%2Fnotify.example.com%3A8443%2Frelay%2F&code=pc_aB3-_9xYz0123456789_-Q&key=-_z9_v8AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRo&name=Work%20Mac",
+        "expected": {
+          "v": 2,
+          "url": "https://notify.example.com:8443/relay",
+          "ws_url": "wss://notify.example.com:8443/relay/v1/ws",
+          "code": "pc_aB3-_9xYz0123456789_-Q",
+          "key_base64url": "-_z9_v8AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRo",
+          "key_hex": "fbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a",
+          "device_name": "Work Mac"
+        }
       }
     ],
     "invalid": [
@@ -113,8 +141,8 @@
       },
       {
         "name": "unsupported_version",
-        "uri": "allnotify://pair?v=2&url=https%3A%2F%2Fnotify.example.com&token=tok&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&device_id=dev_1&name=Phone",
-        "reason": "only protocol version 1 is supported"
+        "uri": "allnotify://pair?v=3&url=https%3A%2F%2Fnotify.example.com&code=pc_AAECAwQFBgcICQoLDA0ODw&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&name=Phone",
+        "reason": "only protocol versions 1 and 2 are supported"
       },
       {
         "name": "missing_version",
@@ -169,6 +197,31 @@
       {
         "name": "missing_name",
         "uri": "allnotify://pair?v=1&url=https%3A%2F%2Fnotify.example.com&token=tok&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&device_id=dev_1",
+        "reason": "name parameter is required"
+      },
+      {
+        "name": "v2_with_token",
+        "uri": "allnotify://pair?v=2&url=https%3A%2F%2Fnotify.example.com&code=pc_AAECAwQFBgcICQoLDA0ODw&token=tok_1&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&name=Phone",
+        "reason": "v2 pairing uri must not contain token"
+      },
+      {
+        "name": "v2_with_device_id",
+        "uri": "allnotify://pair?v=2&url=https%3A%2F%2Fnotify.example.com&code=pc_AAECAwQFBgcICQoLDA0ODw&device_id=dev_1&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&name=Phone",
+        "reason": "v2 pairing uri must not contain device_id"
+      },
+      {
+        "name": "v2_missing_code",
+        "uri": "allnotify://pair?v=2&url=https%3A%2F%2Fnotify.example.com&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&name=Phone",
+        "reason": "code parameter is required for v2"
+      },
+      {
+        "name": "v2_malformed_code",
+        "uri": "allnotify://pair?v=2&url=https%3A%2F%2Fnotify.example.com&code=pc_short&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&name=Phone",
+        "reason": "code must match ^pc_[A-Za-z0-9_-]{22}$"
+      },
+      {
+        "name": "v2_missing_name",
+        "uri": "allnotify://pair?v=2&url=https%3A%2F%2Fnotify.example.com&code=pc_AAECAwQFBgcICQoLDA0ODw&key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
         "reason": "name parameter is required"
       }
     ]

@@ -30,8 +30,10 @@ type kdfVector struct {
 	KMasterB64URL string `json:"k_master_base64url"`
 	EventInfo     string `json:"event_info"`
 	BlobInfo      string `json:"blob_info"`
+	KCVInfo       string `json:"kcv_info"`
 	KEventHex     string `json:"k_event_hex"`
 	KBlobHex      string `json:"k_blob_hex"`
+	KCVHex        string `json:"kcv_hex"`
 }
 
 type eventVector struct {
@@ -69,10 +71,11 @@ type expectedPairData struct {
 	V          int    `json:"v"`
 	URL        string `json:"url"`
 	WSURL      string `json:"ws_url"`
-	Token      string `json:"token"`
+	Token      string `json:"token,omitempty"`
+	Code       string `json:"code,omitempty"`
 	KeyB64URL  string `json:"key_base64url"`
 	KeyHex     string `json:"key_hex"`
-	DeviceID   string `json:"device_id"`
+	DeviceID   string `json:"device_id,omitempty"`
 	DeviceName string `json:"device_name"`
 }
 
@@ -131,6 +134,13 @@ func TestProtocolVectors(t *testing.T) {
 	}
 	if hex.EncodeToString(kBlob) != v.KDF.KBlobHex {
 		t.Fatalf("k_blob mismatch")
+	}
+	if v.KDF.KCVInfo != auth.KCVKDFInfo {
+		t.Fatalf("kcv_info = %q, want %q", v.KDF.KCVInfo, auth.KCVKDFInfo)
+	}
+	kcv, err := auth.ComputeKCV(kMaster)
+	if err != nil || kcv != v.KDF.KCVHex {
+		t.Fatalf("kcv mismatch: got=%q want=%q err=%v", kcv, v.KDF.KCVHex, err)
 	}
 
 	eventAEAD, err := chacha20poly1305.NewX(kEvent)
@@ -196,6 +206,7 @@ func TestProtocolVectors(t *testing.T) {
 				URL:        tc.Expected.URL,
 				WSURL:      tc.Expected.WSURL,
 				Token:      tc.Expected.Token,
+				Code:       tc.Expected.Code,
 				KeyB64URL:  tc.Expected.KeyB64URL,
 				KeyHex:     tc.Expected.KeyHex,
 				DeviceID:   tc.Expected.DeviceID,
@@ -206,9 +217,14 @@ func TestProtocolVectors(t *testing.T) {
 			}
 
 			// Round-trip build + parse.
-			built, err := auth.BuildPairingURI(got.URL, got.Token, got.KeyB64URL, got.DeviceID, got.DeviceName)
+			var built string
+			if got.V == 1 {
+				built, err = auth.BuildPairingURI(got.URL, got.Token, got.KeyB64URL, got.DeviceID, got.DeviceName)
+			} else {
+				built, err = auth.BuildPairingURIv2(got.URL, got.Code, got.KeyB64URL, got.DeviceName)
+			}
 			if err != nil {
-				t.Fatalf("BuildPairingURI: %v", err)
+				t.Fatalf("BuildPairingURI(v=%d): %v", got.V, err)
 			}
 			reparsed, err := auth.ParsePairingURI(built)
 			if err != nil || reparsed != want {

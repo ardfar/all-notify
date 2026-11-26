@@ -1458,6 +1458,7 @@ mod tests {
             key_bytes: k_master,
             device_id: mac_id.clone(),
             device_name: "MacBook Pro".to_string(),
+            can_add_devices: false,
         };
 
         let handle = spawn_sync_loop(
@@ -1788,6 +1789,7 @@ mod tests {
             key_bytes: k_master,
             device_id: mac_id.clone(),
             device_name: "MacBook Revoke Test".to_string(),
+            can_add_devices: false,
         };
 
         // 1. Connect live, wait for Connected, then revoke token via CLI while connected.

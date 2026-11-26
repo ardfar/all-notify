@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>All-Notify Admin</title>
+  <link rel="stylesheet" href="/admin/assets/admin.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <h1>All-Notify Admin</h1>
+      </div>
+      <div id="topbar-actions" class="topbar-actions hidden">
+        <span id="key-badge" class="badge badge-muted">Key locked</span>
+        <button id="btn-logout" type="button" class="btn btn-ghost">Sign out</button>
+      </div>
+    </header>
+
+    <div id="global-alert" class="alert hidden" role="alert"></div>
+
+    <!-- 1. Login View -->
+    <section id="view-login" class="card narrow hidden">
+      <h2>Admin Sign In</h2>
+      <p class="muted">First-time password is printed once to server stdout on initial start.</p>
+      <form id="form-login" autocomplete="off">
+        <label for="login-password">Admin password</label>
+        <input id="login-password" type="password" required autocomplete="current-password" placeholder="Enter admin password">
+        <button type="submit" class="btn btn-primary full">Sign in</button>
+      </form>
+    </section>
+
+    <!-- 2. Forced Password Change View -->
+    <section id="view-force-password" class="card narrow hidden">
+      <h2>Change Initial Password</h2>
+      <p class="muted">You must choose a new admin password (minimum 12 characters) before continuing.</p>
+      <form id="form-force-password" autocomplete="off">
+        <label for="fp-current">Current password</label>
+        <input id="fp-current" type="password" required autocomplete="current-password">
+        <label for="fp-new">New password (min 12 chars)</label>
+        <input id="fp-new" type="password" required minlength="12" autocomplete="new-password">
+        <label for="fp-confirm">Confirm new password</label>
+        <input id="fp-confirm" type="password" required minlength="12" autocomplete="new-password">
+        <button type="submit" class="btn btn-primary full">Update password</button>
+      </form>
+    </section>
+
+    <!-- 3. First-Time Key Setup View -->
+    <section id="view-key-setup" class="card hidden">
+      <h2>Group Encryption Key Setup</h2>
+      <p class="muted">
+        Your E2EE master key (<code>K_master</code>) is generated and held only in this browser tab.
+        It is <strong>never</strong> sent to the server — only a one-way check value (KCV) is stored to catch typos later.
+      </p>
+
+      <div class="tabs">
+        <button id="tab-gen-key" type="button" class="tab active">Generate new key</button>
+        <button id="tab-import-key" type="button" class="tab">I already have a key</button>
+      </div>
+
+      <div id="panel-gen-key" class="panel">
+        <div class="key-box">
+          <code id="generated-key-text"></code>
+        </div>
+        <div class="row gap">
+          <button id="btn-copy-gen-key" type="button" class="btn">Copy key</button>
+          <button id="btn-download-gen-key" type="button" class="btn">Download all-notify-key.txt</button>
+          <button id="btn-regen-key" type="button" class="btn btn-ghost">Regenerate</button>
+        </div>
+        <label class="checkbox-row">
+          <input id="chk-saved-key" type="checkbox">
+          <span>I have saved this key in my password manager. I understand the server cannot recover it.</span>
+        </label>
+        <button id="btn-confirm-gen-key" type="button" class="btn btn-primary" disabled>Save check value &amp; continue</button>
+      </div>
+
+      <div id="panel-import-key" class="panel hidden">
+        <form id="form-import-key" autocomplete="off">
+          <label for="import-key-input">Existing K_master (43-char base64url)</label>
+          <input id="import-key-input" type="password" required spellcheck="false" placeholder="Paste existing base64url K_master">
+          <button type="submit" class="btn btn-primary">Verify &amp; save check value</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- 4. Main Dashboard -->
+    <main id="view-dashboard" class="hidden">
+      <nav class="nav-tabs">
+        <button id="nav-devices" type="button" class="nav-tab active">Devices</button>
+        <button id="nav-add" type="button" class="nav-tab">Add Device</button>
+        <button id="nav-settings" type="button" class="nav-tab">Settings</button>
+      </nav>
+
+      <!-- Devices Tab -->
+      <section id="section-devices" class="card">
+        <div class="section-head">
+          <h2>Registered Devices</h2>
+          <button id="btn-refresh-devices" type="button" class="btn btn-ghost">Refresh</button>
+        </div>
+        <div id="devices-list" class="list"></div>
+
+        <h3 class="subhead">Recent Pairing Codes (24h)</h3>
+        <div id="codes-list" class="list"></div>
+      </section>
+
+      <!-- Add Device Tab -->
+      <section id="section-add" class="card hidden">
+        <h2>Pair a New Device</h2>
+
+        <!-- Unlock K_master box if not loaded in tab memory -->
+        <div id="unlock-key-box" class="subcard hidden">
+          <h3>Unlock Group Key (Tab Memory Only)</h3>
+          <p class="muted">Paste your saved <code>K_master</code> to generate pairing QR codes. It stays in this tab's memory and is verified locally against the server's KCV.</p>
+          <form id="form-unlock-key" autocomplete="off" class="row gap">
+            <input id="unlock-key-input" type="password" required spellcheck="false" placeholder="Paste K_master (base64url)">
+            <button type="submit" class="btn btn-primary">Unlock</button>
+          </form>
+        </div>
+
+        <!-- Create Pairing Code form -->
+        <form id="form-create-code" class="hidden" autocomplete="off">
+          <div class="grid-2">
+            <div>
+              <label for="new-dev-name">Device name</label>
+              <input id="new-dev-name" type="text" required maxlength="128" placeholder="e.g. Pixel 9 or MacBook Pro">
+            </div>
+            <div>
+              <label for="new-dev-platform">Platform</label>
+              <select id="new-dev-platform">
+                <option value="android">Android</option>
+                <option value="macos">macOS</option>
+                <option value="windows">Windows</option>
+              </select>
+            </div>
+          </div>
+          <label class="checkbox-row">
+            <input id="new-dev-trusted" type="checkbox">
+            <span>Trusted device (can create one-time pairing codes for additional devices)</span>
+          </label>
+          <button type="submit" class="btn btn-primary">Generate Pairing QR</button>
+        </form>
+
+        <!-- Active QR Display -->
+        <div id="qr-result" class="qr-card hidden">
+          <div class="qr-head">
+            <div>
+              <h3 id="qr-device-title"></h3>
+              <span id="qr-status-badge" class="badge">Pending</span>
+              <span id="qr-countdown" class="muted"></span>
+            </div>
+            <button id="btn-cancel-active-code" type="button" class="btn btn-danger">Cancel code</button>
+          </div>
+          <div class="qr-body">
+            <img id="qr-image" class="qr-img" alt="Pairing QR code">
+            <div class="qr-actions">
+              <p class="muted">Scan with the All-Notify Android app, or copy/download for desktop.</p>
+              <textarea id="qr-link-text" readonly rows="3" spellcheck="false"></textarea>
+              <div class="row gap">
+                <button id="btn-copy-link" type="button" class="btn btn-primary">Copy pairing link</button>
+                <a id="btn-download-qr" class="btn" download="all-notify-pair-qr.png">Download QR PNG</a>
+                <button id="btn-new-code" type="button" class="btn btn-ghost">Pair another</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Settings Tab -->
+      <section id="section-settings" class="card hidden">
+        <h2>Admin Settings</h2>
+        <div class="subcard">
+          <h3>Group Key Check Value (KCV)</h3>
+          <p class="muted">Fingerprint: <code id="settings-kcv">-</code></p>
+          <button id="btn-lock-key" type="button" class="btn">Forget key from this tab</button>
+        </div>
+        <div class="subcard">
+          <h3>Change Admin Password</h3>
+          <form id="form-settings-password" autocomplete="off">
+            <label for="sp-current">Current password</label>
+            <input id="sp-current" type="password" required autocomplete="current-password">
+            <label for="sp-new">New password (min 12 chars)</label>
+            <input id="sp-new" type="password" required minlength="12" autocomplete="new-password">
+            <label for="sp-confirm">Confirm new password</label>
+            <input id="sp-confirm" type="password" required minlength="12" autocomplete="new-password">
+            <button type="submit" class="btn btn-primary">Change password</button>
+          </form>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/admin/assets/qrcode.min.js"></script>
+  <script src="/admin/assets/admin.js"></script>
+</body>
+</html>

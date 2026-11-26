@@ -67,6 +67,7 @@ object KvKeys {
     const val LAST_ACKED_SEQ = "last_acked_seq"
     const val PAUSED_UNTIL = "paused_until"
     const val FILTER_MODE = "filter_mode"
+    const val CAN_ADD_DEVICES = "can_add_devices"
 
     const val FILTER_MODE_DENYLIST = "denylist"
     const val FILTER_MODE_ALLOWLIST = "allowlist"

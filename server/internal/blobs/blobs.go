@@ -262,6 +262,12 @@ func (m *Manager) ReapExpired(ctx context.Context) (eventsDeleted int64, blobsDe
 	for _, id := range expiredBlobs {
 		_ = os.Remove(m.path(id))
 	}
+	if _, err := m.db.DeleteOldPairingCodes(ctx, nowMs-(24*time.Hour).Milliseconds()); err != nil {
+		return eventsDeleted, len(expiredBlobs), err
+	}
+	if _, err := m.db.DeleteExpiredAdminSessions(ctx, nowMs); err != nil {
+		return eventsDeleted, len(expiredBlobs), err
+	}
 	return eventsDeleted, len(expiredBlobs), nil
 }
 

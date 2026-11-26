@@ -45,10 +45,67 @@ data class PairingConfig(
         "PairingConfig(v=$version, serverUrl=$serverUrl, deviceId=$deviceId, deviceName=$deviceName)"
 }
 
+sealed class PairingLink {
+    abstract val version: Int
+    abstract val serverUrl: String
+    abstract val wsUrl: String
+    abstract val keyBase64Url: String
+    abstract val keyBytes: ByteArray
+    abstract val deviceName: String
+
+    data class V1(val config: PairingConfig) : PairingLink() {
+        override val version: Int get() = config.version
+        override val serverUrl: String get() = config.serverUrl
+        override val wsUrl: String get() = config.wsUrl
+        override val keyBase64Url: String get() = config.keyBase64Url
+        override val keyBytes: ByteArray get() = config.keyBytes
+        override val deviceName: String get() = config.deviceName
+
+        override fun toString(): String = "PairingLink.V1($config)"
+    }
+
+    data class V2(
+        override val serverUrl: String,
+        override val wsUrl: String,
+        val code: String,
+        override val keyBase64Url: String,
+        override val keyBytes: ByteArray,
+        override val deviceName: String
+    ) : PairingLink() {
+        override val version: Int = 2
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is V2) return false
+            return serverUrl == other.serverUrl &&
+                wsUrl == other.wsUrl &&
+                code == other.code &&
+                keyBase64Url == other.keyBase64Url &&
+                keyBytes.contentEquals(other.keyBytes) &&
+                deviceName == other.deviceName
+        }
+
+        override fun hashCode(): Int {
+            var result = serverUrl.hashCode()
+            result = 31 * result + wsUrl.hashCode()
+            result = 31 * result + code.hashCode()
+            result = 31 * result + keyBase64Url.hashCode()
+            result = 31 * result + keyBytes.contentHashCode()
+            result = 31 * result + deviceName.hashCode()
+            return result
+        }
+
+        // Never leak secrets (pairing code or K_master) via toString().
+        override fun toString(): String =
+            "PairingLink.V2(serverUrl=$serverUrl, deviceName=$deviceName)"
+    }
+}
+
 object PairingUriParser {
     private val UNPADDED_B64URL = Regex("^[A-Za-z0-9_-]+$")
+    private val PAIRING_CODE_REGEX = Regex("^pc_[A-Za-z0-9_-]{22}$")
 
-    fun parse(raw: String): Result<PairingConfig> = runCatching {
+    fun parseLink(raw: String): Result<PairingLink> = runCatching {
         val trimmed = raw.trim()
         val uri = URI(trimmed)
         require(uri.scheme == "allnotify") { "scheme must be allnotify" }
@@ -61,7 +118,7 @@ object PairingUriParser {
         val query = parseQuery(uri.rawQuery.orEmpty())
         val vStr = query["v"] ?: error("v parameter is required")
         val vInt = vStr.toIntOrNull() ?: error("invalid v parameter")
-        require(vInt == 1) { "only protocol version 1 is supported" }
+        require(vInt == 1 || vInt == 2) { "only protocol versions 1 and 2 are supported" }
 
         val serverUrlRaw = query["url"]?.takeIf { it.isNotEmpty() } ?: error("url parameter is required")
         val serverUri = URI(serverUrlRaw)
@@ -74,8 +131,6 @@ object PairingUriParser {
         val cleanUrl = serverUri.toASCIIString().trimEnd('/')
         val wsUrl = "wss://" + cleanUrl.removePrefix("https://") + "/v1/ws"
 
-        val token = query["token"]?.takeIf { it.isNotEmpty() } ?: error("token parameter is required")
-        val deviceId = query["device_id"]?.takeIf { it.isNotEmpty() } ?: error("device_id parameter is required")
         val deviceName = query["name"]?.takeIf { it.isNotEmpty() } ?: error("name parameter is required")
 
         val keyB64 = query["key"]?.takeIf { it.isNotEmpty() } ?: error("key parameter is required")
@@ -86,30 +141,62 @@ object PairingUriParser {
         val canonical = Base64.getUrlEncoder().withoutPadding().encodeToString(keyBytes)
         require(canonical == keyB64) { "key is not canonical unpadded base64url" }
 
-        PairingConfig(
-            version = vInt,
-            serverUrl = cleanUrl,
-            wsUrl = wsUrl,
-            token = token,
-            keyBase64Url = keyB64,
-            keyBytes = keyBytes,
-            deviceId = deviceId,
-            deviceName = deviceName
-        )
+        if (vInt == 1) {
+            val token = query["token"]?.takeIf { it.isNotEmpty() } ?: error("token parameter is required")
+            val deviceId = query["device_id"]?.takeIf { it.isNotEmpty() } ?: error("device_id parameter is required")
+            PairingLink.V1(
+                PairingConfig(
+                    version = 1,
+                    serverUrl = cleanUrl,
+                    wsUrl = wsUrl,
+                    token = token,
+                    keyBase64Url = keyB64,
+                    keyBytes = keyBytes,
+                    deviceId = deviceId,
+                    deviceName = deviceName
+                )
+            )
+        } else {
+            require(!query.containsKey("token")) { "v2 pairing uri must not contain token" }
+            require(!query.containsKey("device_id")) { "v2 pairing uri must not contain device_id" }
+            val code = query["code"]?.takeIf { it.isNotEmpty() } ?: error("code parameter is required")
+            require(PAIRING_CODE_REGEX.matches(code)) { "invalid pairing code format" }
+            PairingLink.V2(
+                serverUrl = cleanUrl,
+                wsUrl = wsUrl,
+                code = code,
+                keyBase64Url = keyB64,
+                keyBytes = keyBytes,
+                deviceName = deviceName
+            )
+        }
     }
 
-    /** Formats a server CLI snippet to mint a token for another device without reusing this device's token. */
-    fun formatAddDeviceCommand(serverUrl: String, keyBase64Url: String): String =
-        "all-notify-server token create --name \"New Device\" --platform android --url $serverUrl --key \"$keyBase64Url\""
+    /** Convenience parser for v1 links returning a ready-to-connect PairingConfig. */
+    fun parse(raw: String): Result<PairingConfig> = parseLink(raw).mapCatching { link ->
+        when (link) {
+            is PairingLink.V1 -> link.config
+            is PairingLink.V2 -> error("v2 pairing link must be claimed via POST /v1/pair/claim")
+        }
+    }
 
     fun encode(config: PairingConfig): String {
         fun enc(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
-        return "allnotify://pair?v=${config.version}" +
+        return "allnotify://pair?v=1" +
             "&url=${enc(config.serverUrl)}" +
             "&token=${enc(config.token)}" +
             "&key=${enc(config.keyBase64Url)}" +
             "&device_id=${enc(config.deviceId)}" +
             "&name=${enc(config.deviceName)}"
+    }
+
+    fun encodeV2(serverUrl: String, code: String, keyBase64Url: String, deviceName: String): String {
+        fun enc(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
+        return "allnotify://pair?v=2" +
+            "&url=${enc(serverUrl.trimEnd('/'))}" +
+            "&code=${enc(code)}" +
+            "&key=${enc(keyBase64Url)}" +
+            "&name=${enc(deviceName)}"
     }
 
     private fun parseQuery(rawQuery: String): Map<String, String> {

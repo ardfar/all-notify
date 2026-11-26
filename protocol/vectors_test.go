@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -37,8 +38,10 @@ type kdfVector struct {
 	KMasterB64URL string `json:"k_master_base64url"`
 	EventInfo     string `json:"event_info"`
 	BlobInfo      string `json:"blob_info"`
+	KCVInfo       string `json:"kcv_info"`
 	KEventHex     string `json:"k_event_hex"`
 	KBlobHex      string `json:"k_blob_hex"`
+	KCVHex        string `json:"kcv_hex"`
 }
 
 type eventVector struct {
@@ -76,10 +79,11 @@ type expectedPairData struct {
 	V          int    `json:"v"`
 	URL        string `json:"url"`
 	WSURL      string `json:"ws_url"`
-	Token      string `json:"token"`
+	Token      string `json:"token,omitempty"`
+	Code       string `json:"code,omitempty"`
 	KeyB64URL  string `json:"key_base64url"`
 	KeyHex     string `json:"key_hex"`
-	DeviceID   string `json:"device_id"`
+	DeviceID   string `json:"device_id,omitempty"`
 	DeviceName string `json:"device_name"`
 }
 
@@ -102,15 +106,17 @@ func loadVectors(t *testing.T) testVectors {
 	return v
 }
 
-func deriveKey(t *testing.T, kMaster []byte, info string) []byte {
+func deriveKey(t *testing.T, kMaster []byte, info string, length int) []byte {
 	t.Helper()
 	r := hkdf.New(sha256.New, kMaster, nil, []byte(info))
-	out := make([]byte, 32)
+	out := make([]byte, length)
 	if _, err := io.ReadFull(r, out); err != nil {
 		t.Fatalf("hkdf derive %q: %v", info, err)
 	}
 	return out
 }
+
+var pairingCodeRegex = regexp.MustCompile(`^pc_[A-Za-z0-9_-]{22}$`)
 
 func decodeHex(t *testing.T, s string) []byte {
 	t.Helper()
@@ -141,7 +147,7 @@ func parsePairingURI(raw string) (expectedPairData, error) {
 		return expectedPairData{}, errors.New("missing v")
 	}
 	vInt, err := strconv.Atoi(vStr)
-	if err != nil || vInt != 1 {
+	if err != nil || (vInt != 1 && vInt != 2) {
 		return expectedPairData{}, errors.New("unsupported version")
 	}
 
@@ -156,14 +162,6 @@ func parsePairingURI(raw string) (expectedPairData, error) {
 	cleanURL := strings.TrimRight(su.String(), "/")
 	wsURL := "wss://" + strings.TrimPrefix(cleanURL, "https://") + "/v1/ws"
 
-	token := q.Get("token")
-	if token == "" {
-		return expectedPairData{}, errors.New("missing token")
-	}
-	deviceID := q.Get("device_id")
-	if deviceID == "" {
-		return expectedPairData{}, errors.New("missing device_id")
-	}
 	deviceName := q.Get("name")
 	if deviceName == "" {
 		return expectedPairData{}, errors.New("missing name")
@@ -178,16 +176,36 @@ func parsePairingURI(raw string) (expectedPairData, error) {
 		return expectedPairData{}, errors.New("key must decode to 32 bytes")
 	}
 
-	return expectedPairData{
+	out := expectedPairData{
 		V:          vInt,
 		URL:        cleanURL,
 		WSURL:      wsURL,
-		Token:      token,
 		KeyB64URL:  keyB64,
 		KeyHex:     hex.EncodeToString(keyBytes),
-		DeviceID:   deviceID,
 		DeviceName: deviceName,
-	}, nil
+	}
+	if vInt == 1 {
+		token := q.Get("token")
+		if token == "" {
+			return expectedPairData{}, errors.New("missing token")
+		}
+		deviceID := q.Get("device_id")
+		if deviceID == "" {
+			return expectedPairData{}, errors.New("missing device_id")
+		}
+		out.Token = token
+		out.DeviceID = deviceID
+	} else {
+		if q.Has("token") || q.Has("device_id") {
+			return expectedPairData{}, errors.New("v2 pairing uri must not contain token or device_id")
+		}
+		code := q.Get("code")
+		if !pairingCodeRegex.MatchString(code) {
+			return expectedPairData{}, errors.New("invalid or missing pairing code")
+		}
+		out.Code = code
+	}
+	return out, nil
 }
 
 func TestGeneratorDeterminism(t *testing.T) {
@@ -225,14 +243,21 @@ func TestCryptoVectors(t *testing.T) {
 		t.Fatalf("k_master_base64url mismatch: got %q, want %q", gotB64, v.KDF.KMasterB64URL)
 	}
 
-	kEvent := deriveKey(t, kMaster, v.KDF.EventInfo)
-	kBlob := deriveKey(t, kMaster, v.KDF.BlobInfo)
+	kEvent := deriveKey(t, kMaster, v.KDF.EventInfo, 32)
+	kBlob := deriveKey(t, kMaster, v.KDF.BlobInfo, 32)
+	kcv := deriveKey(t, kMaster, v.KDF.KCVInfo, 16)
 
 	if got := hex.EncodeToString(kEvent); got != v.KDF.KEventHex {
 		t.Fatalf("k_event mismatch: got %s, want %s", got, v.KDF.KEventHex)
 	}
 	if got := hex.EncodeToString(kBlob); got != v.KDF.KBlobHex {
 		t.Fatalf("k_blob mismatch: got %s, want %s", got, v.KDF.KBlobHex)
+	}
+	if v.KDF.KCVInfo != "all-notify:v1:kcv" {
+		t.Fatalf("kcv_info = %q, want all-notify:v1:kcv", v.KDF.KCVInfo)
+	}
+	if got := hex.EncodeToString(kcv); got != v.KDF.KCVHex || len(got) != 32 {
+		t.Fatalf("kcv mismatch: got %s, want %s", got, v.KDF.KCVHex)
 	}
 	if bytes.Equal(kEvent, kBlob) {
 		t.Fatalf("k_event and k_blob must be domain-separated")

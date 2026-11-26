@@ -10,10 +10,15 @@ const els = {
   btnSettings: document.getElementById("btn-settings"),
 
   viewPairing: document.getElementById("view-pairing"),
+  pairBackRow: document.getElementById("pair-back-row"),
+  btnPairCancel: document.getElementById("btn-pair-cancel"),
   qrDropzone: document.getElementById("qr-dropzone"),
   qrFileInput: document.getElementById("qr-file-input"),
   pairUriInput: document.getElementById("pair-uri-input"),
   pairError: document.getElementById("pair-error"),
+  pairConfirmReplace: document.getElementById("pair-confirm-replace"),
+  btnConfirmReplace: document.getElementById("btn-confirm-replace"),
+  btnCancelReplace: document.getElementById("btn-cancel-replace"),
   btnPairSubmit: document.getElementById("btn-pair-submit"),
 
   viewFeed: document.getElementById("view-feed"),
@@ -32,8 +37,28 @@ const els = {
   inputRetRows: document.getElementById("input-ret-rows"),
   btnSaveRetention: document.getElementById("btn-save-retention"),
   settingsFeedback: document.getElementById("settings-feedback"),
+  cardAddDevice: document.getElementById("card-add-device"),
+  btnOpenAddDevice: document.getElementById("btn-open-add-device"),
+  btnOpenRepair: document.getElementById("btn-open-repair"),
   btnClearHistory: document.getElementById("btn-clear-history"),
   btnUnpair: document.getElementById("btn-unpair"),
+
+  viewAddDevice: document.getElementById("view-add-device"),
+  btnBackSettings: document.getElementById("btn-back-settings"),
+  addDeviceFormCard: document.getElementById("add-device-form-card"),
+  addDevName: document.getElementById("add-dev-name"),
+  addDevPlatform: document.getElementById("add-dev-platform"),
+  addDevError: document.getElementById("add-dev-error"),
+  btnGenerateQr: document.getElementById("btn-generate-qr"),
+  addDeviceQrCard: document.getElementById("add-device-qr-card"),
+  addQrTitle: document.getElementById("add-qr-title"),
+  addQrStatus: document.getElementById("add-qr-status"),
+  addQrCountdown: document.getElementById("add-qr-countdown"),
+  addQrImg: document.getElementById("add-qr-img"),
+  addQrUri: document.getElementById("add-qr-uri"),
+  btnCopyAddUri: document.getElementById("btn-copy-add-uri"),
+  btnAddAnother: document.getElementById("btn-add-another"),
+  addQrFeedback: document.getElementById("add-qr-feedback"),
 
   lightbox: document.getElementById("lightbox"),
   lightboxImg: document.getElementById("lightbox-img"),
@@ -42,6 +67,13 @@ const els = {
 
 let appState = null;
 let showingSettings = false;
+let showingAddDevice = false;
+let showingRepair = false;
+let pendingReplaceUri = null;
+let activeAddCode = null;
+let addPollTimer = null;
+let addCountdownTimer = null;
+let addQrFeedbackTimer = null;
 let searchTimer = null;
 let feedbackTimer = null;
 let feedRequestSeq = 0;
@@ -109,18 +141,52 @@ function syncRetentionInputs() {
   }
 }
 
+function stopAddDeviceTimers() {
+  if (addPollTimer) { clearInterval(addPollTimer); addPollTimer = null; }
+  if (addCountdownTimer) { clearInterval(addCountdownTimer); addCountdownTimer = null; }
+}
+
+function setContentProtection(enabled) {
+  invoke("set_content_protected", { protected: enabled }).catch(() => {});
+}
+
+function exitAddDeviceView() {
+  stopAddDeviceTimers();
+  clearTimeout(addQrFeedbackTimer);
+  activeAddCode = null;
+  showingAddDevice = false;
+  els.addDeviceQrCard.classList.add("hidden");
+  els.addDeviceFormCard.classList.remove("hidden");
+  els.addQrImg.removeAttribute("src");
+  els.addQrUri.value = "";
+  els.addDevError.classList.add("hidden");
+  els.addQrFeedback.classList.add("hidden");
+  setContentProtection(false);
+}
+
 function renderHeaderAndViews() {
   els.statusDot.className = `status-dot ${statusDotClass(appState)}`;
   els.statusLabel.textContent = statusText(appState);
 
   const paired = Boolean(appState && appState.paired);
+  const canAdd = Boolean(appState && appState.can_add_devices);
+  if (!paired || !canAdd) {
+    if (showingAddDevice) exitAddDeviceView();
+  }
+  if (!paired) {
+    showingRepair = false;
+  }
+
+  const showPairing = !paired || showingRepair;
   els.headerActions.classList.toggle("hidden", !paired);
   els.btnMute.classList.toggle("active", Boolean(appState && appState.muted));
   els.btnMute.title = appState && appState.muted ? "Resume notifications" : "Pause / Mute notifications";
 
-  els.viewPairing.classList.toggle("hidden", paired);
-  els.viewFeed.classList.toggle("hidden", !paired || showingSettings);
-  els.viewSettings.classList.toggle("hidden", !paired || !showingSettings);
+  els.viewPairing.classList.toggle("hidden", !showPairing);
+  els.pairBackRow.classList.toggle("hidden", !paired);
+  els.viewFeed.classList.toggle("hidden", showPairing || showingSettings || showingAddDevice);
+  els.viewSettings.classList.toggle("hidden", showPairing || !showingSettings || showingAddDevice);
+  els.viewAddDevice.classList.toggle("hidden", !paired || !canAdd || !showingAddDevice);
   els.authErrorBanner.classList.toggle(
     "hidden",
     !paired || appState.status !== "unauthorized"
@@ -131,6 +197,7 @@ function renderHeaderAndViews() {
     els.setServerUrl.textContent = appState.server_url || "—";
     els.toggleAutostart.checked = Boolean(appState.autostart);
     els.togglePrivacy.checked = Boolean(appState.privacy_mode);
+    els.cardAddDevice.classList.toggle("hidden", !canAdd);
     if (!showingSettings) {
       syncRetentionInputs();
     }
@@ -141,6 +208,8 @@ async function refreshState() {
   appState = await invoke("get_app_state");
   if (!appState.paired) {
     showingSettings = false;
+    showingRepair = false;
+    if (showingAddDevice) exitAddDeviceView();
   }
   renderHeaderAndViews();
 }
@@ -336,8 +405,14 @@ function showPairError(msg) {
   els.pairError.classList.toggle("hidden", !msg);
 }
 
-async function submitPairingUri(uri) {
+function hideReplaceConfirm() {
+  pendingReplaceUri = null;
+  els.pairConfirmReplace.classList.add("hidden");
+}
+
+async function submitPairingUri(uri, forceReplace = false) {
   showPairError("");
+  hideReplaceConfirm();
   const trimmed = (uri || "").trim();
   if (!trimmed) {
     showPairError("Paste an allnotify://pair URI or drop a QR code image.");
@@ -345,13 +420,20 @@ async function submitPairingUri(uri) {
   }
   els.btnPairSubmit.disabled = true;
   try {
-    appState = await invoke("pair_with_uri", { uri: trimmed });
+    appState = await invoke("pair_with_uri", { uri: trimmed, forceReplace });
     els.pairUriInput.value = "";
     showingSettings = false;
+    showingRepair = false;
     renderHeaderAndViews();
     await refreshFeed();
   } catch (err) {
-    showPairError(String(err));
+    const msg = String(err);
+    if (msg === "CONFIRM_REPLACE") {
+      pendingReplaceUri = trimmed;
+      els.pairConfirmReplace.classList.remove("hidden");
+    } else {
+      showPairError(msg);
+    }
   } finally {
     els.btnPairSubmit.disabled = false;
   }
@@ -377,7 +459,130 @@ async function handleQrFile(file) {
 
 // ---- Event Wiring ----
 
-els.btnPairSubmit.addEventListener("click", () => submitPairingUri(els.pairUriInput.value));
+els.btnPairSubmit.addEventListener("click", () => submitPairingUri(els.pairUriInput.value, false));
+els.btnConfirmReplace.addEventListener("click", () => {
+  if (pendingReplaceUri) submitPairingUri(pendingReplaceUri, true);
+});
+els.btnCancelReplace.addEventListener("click", () => hideReplaceConfirm());
+els.btnPairCancel.addEventListener("click", () => {
+  hideReplaceConfirm();
+  showPairError("");
+  showingRepair = false;
+  renderHeaderAndViews();
+});
+
+els.btnOpenRepair.addEventListener("click", () => {
+  hideReplaceConfirm();
+  showPairError("");
+  showingRepair = true;
+  renderHeaderAndViews();
+});
+
+els.btnOpenAddDevice.addEventListener("click", () => {
+  showingAddDevice = true;
+  els.addDevError.classList.add("hidden");
+  els.addDeviceQrCard.classList.add("hidden");
+  els.addDeviceFormCard.classList.remove("hidden");
+  renderHeaderAndViews();
+  els.addDevName.focus();
+});
+
+els.btnBackSettings.addEventListener("click", () => {
+  exitAddDeviceView();
+  renderHeaderAndViews();
+});
+
+function showAddDevError(msg) {
+  els.addDevError.textContent = msg;
+  els.addDevError.classList.toggle("hidden", !msg);
+}
+
+els.btnGenerateQr.addEventListener("click", async () => {
+  showAddDevError("");
+  const name = els.addDevName.value.trim();
+  if (!name) {
+    showAddDevError("Enter a device name.");
+    return;
+  }
+  els.btnGenerateQr.disabled = true;
+  try {
+    const res = await invoke("create_add_device_qr", {
+      name,
+      platform: els.addDevPlatform.value,
+    });
+    activeAddCode = res;
+    els.addQrTitle.textContent = `${res.name} (${res.platform})`;
+    els.addQrStatus.textContent = "Pending";
+    els.addQrImg.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(res.qr_svg);
+    els.addQrUri.value = res.pairing_uri;
+    els.addDeviceFormCard.classList.add("hidden");
+    els.addDeviceQrCard.classList.remove("hidden");
+    setContentProtection(true);
+
+    stopAddDeviceTimers();
+    const tick = () => {
+      if (!activeAddCode) return;
+      const rem = Math.max(0, Math.floor((activeAddCode.expires_at - Date.now()) / 1000));
+      const m = Math.floor(rem / 60);
+      const s = String(rem % 60).padStart(2, "0");
+      els.addQrCountdown.textContent = rem > 0 ? `Expires in ${m}:${s}` : "Expired";
+      if (rem === 0) {
+        els.addQrStatus.textContent = "Expired";
+        stopAddDeviceTimers();
+      }
+    };
+    tick();
+    addCountdownTimer = setInterval(tick, 1000);
+
+    addPollTimer = setInterval(async () => {
+      if (!activeAddCode) return;
+      try {
+        const list = await invoke("list_my_pairing_codes");
+        const found = list.find((item) => item.code_id === activeAddCode.code_id);
+        if (!found) return;
+        if (found.status === "claimed") {
+          els.addQrStatus.textContent = "Claimed \u2713";
+          els.addQrCountdown.textContent = "Device paired!";
+          stopAddDeviceTimers();
+        } else if (found.status === "expired" || found.status === "cancelled") {
+          els.addQrStatus.textContent = found.status === "cancelled" ? "Cancelled" : "Expired";
+          stopAddDeviceTimers();
+        }
+      } catch {
+        // Ignore transient polling failures
+      }
+    }, 3000);
+  } catch (err) {
+    showAddDevError(String(err));
+  } finally {
+    els.btnGenerateQr.disabled = false;
+  }
+});
+
+els.btnCopyAddUri.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(els.addQrUri.value);
+    els.addQrFeedback.textContent = "Pairing link copied.";
+    els.addQrFeedback.classList.remove("hidden");
+    clearTimeout(addQrFeedbackTimer);
+    addQrFeedbackTimer = setTimeout(() => els.addQrFeedback.classList.add("hidden"), 2500);
+  } catch {
+    els.addQrUri.select();
+  }
+});
+
+els.btnAddAnother.addEventListener("click", () => {
+  stopAddDeviceTimers();
+  clearTimeout(addQrFeedbackTimer);
+  activeAddCode = null;
+  els.addDevName.value = "";
+  els.addQrImg.removeAttribute("src");
+  els.addQrUri.value = "";
+  els.addQrFeedback.classList.add("hidden");
+  els.addDeviceQrCard.classList.add("hidden");
+  els.addDeviceFormCard.classList.remove("hidden");
+  setContentProtection(false);
+});
 
 function openQrFilePicker() {
   // Fire-and-forget before synchronous .click() so WebKit/WebView2 preserves user activation.
@@ -405,7 +610,10 @@ els.qrFileInput.addEventListener("cancel", () => {
 });
 window.addEventListener("focus", () => {
   invoke("set_file_dialog_open", { open: false }).catch(() => {});
-  if (appState && appState.paired && !showingSettings) {
+  if (showingAddDevice && activeAddCode) {
+    setContentProtection(true);
+  }
+  if (appState && appState.paired && !showingSettings && !showingAddDevice && !showingRepair) {
     refreshFeed().catch(() => {});
   }
 });
@@ -436,6 +644,8 @@ els.btnClearAll.addEventListener("click", async () => {
 });
 
 els.btnSettings.addEventListener("click", () => {
+  if (showingAddDevice) exitAddDeviceView();
+  showingRepair = false;
   showingSettings = !showingSettings;
   if (showingSettings) syncRetentionInputs();
   renderHeaderAndViews();
@@ -546,6 +756,13 @@ window.addEventListener("keydown", (e) => {
     if (!els.lightbox.classList.contains("hidden")) {
       els.lightbox.classList.add("hidden");
       els.lightboxImg.src = "";
+    } else if (showingAddDevice) {
+      exitAddDeviceView();
+      renderHeaderAndViews();
+    } else if (showingRepair) {
+      hideReplaceConfirm();
+      showingRepair = false;
+      renderHeaderAndViews();
     } else if (showingSettings) {
       showingSettings = false;
       renderHeaderAndViews();

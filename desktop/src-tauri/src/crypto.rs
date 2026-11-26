@@ -18,6 +18,7 @@ use url::Url;
 
 const EVENT_KDF_INFO: &[u8] = b"all-notify:v1:event";
 const BLOB_KDF_INFO: &[u8] = b"all-notify:v1:blob";
+const KCV_KDF_INFO: &[u8] = b"all-notify:v1:kcv";
 const NONCE_LEN: usize = 24;
 const TAG_LEN: usize = 16;
 const MAX_QR_IMAGE_BYTES: usize = 10 * 1024 * 1024; // 10 MiB cap for dropped QR images
@@ -65,6 +66,14 @@ pub fn derive_keys(k_master: &[u8; 32]) -> Result<DerivedKeys, CryptoError> {
     hk.expand(BLOB_KDF_INFO, &mut k_blob)
         .map_err(|_| CryptoError::KdfFailed)?;
     Ok(DerivedKeys { k_event, k_blob })
+}
+
+pub fn compute_kcv(k_master: &[u8; 32]) -> Result<String, CryptoError> {
+    let hk = Hkdf::<Sha256>::new(None, k_master);
+    let mut out = [0u8; 16];
+    hk.expand(KCV_KDF_INFO, &mut out)
+        .map_err(|_| CryptoError::KdfFailed)?;
+    Ok(hex::encode(out))
 }
 
 #[derive(Clone)]
@@ -201,6 +210,7 @@ pub struct PairingConfig {
     pub key_bytes: [u8; 32],
     pub device_id: String,
     pub device_name: String,
+    pub can_add_devices: bool,
 }
 
 // Never leak secrets (K_master or bearer token) via Debug output.
@@ -212,13 +222,74 @@ impl fmt::Debug for PairingConfig {
             .field("ws_url", &self.ws_url)
             .field("device_id", &self.device_id)
             .field("device_name", &self.device_name)
+            .field("can_add_devices", &self.can_add_devices)
             .field("token", &"[REDACTED]")
             .field("key", &"[REDACTED]")
             .finish()
     }
 }
 
-pub fn parse_pairing_uri(raw: &str) -> Result<PairingConfig, CryptoError> {
+#[derive(Clone, PartialEq, Eq)]
+pub enum PairingLink {
+    V1(PairingConfig),
+    V2 {
+        server_url: String,
+        ws_url: String,
+        code: String,
+        key_base64url: String,
+        key_bytes: [u8; 32],
+        device_name: String,
+    },
+}
+
+impl PairingLink {
+    pub fn server_url(&self) -> &str {
+        match self {
+            PairingLink::V1(c) => &c.server_url,
+            PairingLink::V2 { server_url, .. } => server_url,
+        }
+    }
+
+    pub fn key_bytes(&self) -> &[u8; 32] {
+        match self {
+            PairingLink::V1(c) => &c.key_bytes,
+            PairingLink::V2 { key_bytes, .. } => key_bytes,
+        }
+    }
+}
+
+impl fmt::Debug for PairingLink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PairingLink::V1(c) => f.debug_tuple("V1").field(c).finish(),
+            PairingLink::V2 {
+                server_url,
+                ws_url,
+                device_name,
+                ..
+            } => f
+                .debug_struct("V2")
+                .field("server_url", server_url)
+                .field("ws_url", ws_url)
+                .field("device_name", device_name)
+                .field("code", &"[REDACTED]")
+                .field("key", &"[REDACTED]")
+                .finish(),
+        }
+    }
+}
+
+fn is_valid_pairing_code(code: &str) -> bool {
+    let Some(rest) = code.strip_prefix("pc_") else {
+        return false;
+    };
+    rest.len() == 22
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+pub fn parse_pairing_link(raw: &str) -> Result<PairingLink, CryptoError> {
     let trimmed = raw.trim();
     let parsed = Url::parse(trimmed)
         .map_err(|e| CryptoError::InvalidPairingUri(format!("malformed uri: {e}")))?;
@@ -260,9 +331,9 @@ pub fn parse_pairing_uri(raw: &str) -> Result<PairingConfig, CryptoError> {
     let version: u32 = v_str
         .parse()
         .map_err(|_| CryptoError::InvalidPairingUri("invalid v parameter".into()))?;
-    if version != 1 {
+    if version != 1 && version != 2 {
         return Err(CryptoError::InvalidPairingUri(
-            "only protocol version 1 is supported".into(),
+            "only protocol versions 1 and 2 are supported".into(),
         ));
     }
 
@@ -304,30 +375,6 @@ pub fn parse_pairing_uri(raw: &str) -> Result<PairingConfig, CryptoError> {
         server_url.strip_prefix("https://").unwrap_or(&server_url)
     );
 
-    let token = params
-        .get("token")
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| CryptoError::InvalidPairingUri("token parameter is required".into()))?
-        .clone();
-    if token.bytes().any(|b| b.is_ascii_control() || b.is_ascii_whitespace()) {
-        return Err(CryptoError::InvalidPairingUri(
-            "token parameter contains invalid whitespace or control characters".into(),
-        ));
-    }
-    let device_id = params
-        .get("device_id")
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| CryptoError::InvalidPairingUri("device_id parameter is required".into()))?
-        .clone();
-    if device_id.len() > 128
-        || !device_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
-        return Err(CryptoError::InvalidPairingUri(
-            "device_id must be 1..=128 ASCII alphanumeric, '_' or '-' characters".into(),
-        ));
-    }
     let device_name = params
         .get("name")
         .filter(|s| !s.is_empty())
@@ -345,16 +392,108 @@ pub fn parse_pairing_uri(raw: &str) -> Result<PairingConfig, CryptoError> {
         .ok_or_else(|| CryptoError::InvalidPairingUri("key parameter is required".into()))?;
     let key_bytes = decode_master_key_b64url(key_b64)?;
 
-    Ok(PairingConfig {
-        version,
-        server_url,
-        ws_url,
-        token,
-        key_base64url: key_b64.clone(),
-        key_bytes,
-        device_id,
-        device_name,
-    })
+    if version == 1 {
+        let token = params
+            .get("token")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| CryptoError::InvalidPairingUri("token parameter is required".into()))?
+            .clone();
+        if token
+            .bytes()
+            .any(|b| b.is_ascii_control() || b.is_ascii_whitespace())
+        {
+            return Err(CryptoError::InvalidPairingUri(
+                "token parameter contains invalid whitespace or control characters".into(),
+            ));
+        }
+        let device_id = params
+            .get("device_id")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                CryptoError::InvalidPairingUri("device_id parameter is required".into())
+            })?
+            .clone();
+        if device_id.len() > 128
+            || !device_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err(CryptoError::InvalidPairingUri(
+                "device_id must be 1..=128 ASCII alphanumeric, '_' or '-' characters".into(),
+            ));
+        }
+        Ok(PairingLink::V1(PairingConfig {
+            version,
+            server_url,
+            ws_url,
+            token,
+            key_base64url: key_b64.clone(),
+            key_bytes,
+            device_id,
+            device_name,
+            can_add_devices: false,
+        }))
+    } else {
+        if params.contains_key("token") || params.contains_key("device_id") {
+            return Err(CryptoError::InvalidPairingUri(
+                "v2 pairing uri must not contain token or device_id".into(),
+            ));
+        }
+        let code = params
+            .get("code")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| CryptoError::InvalidPairingUri("code parameter is required".into()))?
+            .clone();
+        if !is_valid_pairing_code(&code) {
+            return Err(CryptoError::InvalidPairingUri(
+                "code must match ^pc_[A-Za-z0-9_-]{22}$".into(),
+            ));
+        }
+        Ok(PairingLink::V2 {
+            server_url,
+            ws_url,
+            code,
+            key_base64url: key_b64.clone(),
+            key_bytes,
+            device_name,
+        })
+    }
+}
+
+pub fn parse_pairing_uri(raw: &str) -> Result<PairingConfig, CryptoError> {
+    match parse_pairing_link(raw)? {
+        PairingLink::V1(cfg) => Ok(cfg),
+        PairingLink::V2 { .. } => Err(CryptoError::InvalidPairingUri(
+            "v2 pairing link must be claimed via POST /v1/pair/claim".into(),
+        )),
+    }
+}
+
+pub fn build_pairing_uri_v2(
+    server_url: &str,
+    code: &str,
+    key_b64url: &str,
+    device_name: &str,
+) -> String {
+    let mut u = Url::parse("allnotify://pair").expect("static pairing url");
+    u.query_pairs_mut()
+        .append_pair("v", "2")
+        .append_pair("url", server_url.trim_end_matches('/'))
+        .append_pair("code", code)
+        .append_pair("key", key_b64url)
+        .append_pair("name", device_name);
+    u.to_string()
+}
+
+pub fn render_qr_svg(content: &str) -> Result<String, CryptoError> {
+    let code = qrcode::QrCode::new(content.as_bytes())
+        .map_err(|e| CryptoError::QrDecodeFailed(format!("qr encode failed: {e}")))?;
+    Ok(code
+        .render::<qrcode::render::svg::Color<'_>>()
+        .min_dimensions(220, 220)
+        .dark_color(qrcode::render::svg::Color("#000000"))
+        .light_color(qrcode::render::svg::Color("#ffffff"))
+        .build())
 }
 
 pub fn decode_master_key_b64url(key_b64: &str) -> Result<[u8; 32], CryptoError> {
@@ -504,6 +643,8 @@ struct PairingMetadata {
     ws_url: String,
     device_id: String,
     device_name: String,
+    #[serde(default)]
+    can_add_devices: bool,
 }
 
 /// Persists non-secret pairing metadata on disk and secrets (`K_master`, `device_token`) in OS Keychain.
@@ -535,6 +676,7 @@ impl CredentialManager {
             ws_url: config.ws_url.clone(),
             device_id: config.device_id.clone(),
             device_name: config.device_name.clone(),
+            can_add_devices: config.can_add_devices,
         };
         let bytes =
             serde_json::to_vec_pretty(&meta).map_err(|e| CryptoError::SecretStore(e.to_string()))?;
@@ -568,6 +710,7 @@ impl CredentialManager {
             key_bytes,
             device_id: meta.device_id,
             device_name: meta.device_name,
+            can_add_devices: meta.can_add_devices,
         }))
     }
 
@@ -600,8 +743,10 @@ mod tests {
     struct KdfVector {
         k_master_hex: String,
         k_master_base64url: String,
+        kcv_info: String,
         k_event_hex: String,
         k_blob_hex: String,
+        kcv_hex: String,
     }
 
     #[derive(Deserialize)]
@@ -644,9 +789,13 @@ mod tests {
         v: u32,
         url: String,
         ws_url: String,
+        #[serde(default)]
         token: String,
+        #[serde(default)]
+        code: String,
         key_base64url: String,
         key_hex: String,
+        #[serde(default)]
         device_id: String,
         device_name: String,
     }
@@ -681,6 +830,8 @@ mod tests {
         let engine = CryptoEngine::new(&k_master).unwrap();
         assert_eq!(hex::encode(engine.keys().k_event), tv.kdf.k_event_hex);
         assert_eq!(hex::encode(engine.keys().k_blob), tv.kdf.k_blob_hex);
+        assert_eq!(tv.kdf.kcv_info, "all-notify:v1:kcv");
+        assert_eq!(compute_kcv(&k_master).unwrap(), tv.kdf.kcv_hex);
 
         for ev in &tv.event_vectors {
             assert_eq!(
@@ -746,26 +897,51 @@ mod tests {
         let tv = load_vectors();
 
         for v in &tv.pairing_uri_vectors.valid {
-            let cfg = parse_pairing_uri(&v.uri)
+            let link = parse_pairing_link(&v.uri)
                 .unwrap_or_else(|e| panic!("expected valid pairing uri {}: {e}", v.name));
-            assert_eq!(cfg.version, v.expected.v);
-            assert_eq!(cfg.server_url, v.expected.url);
-            assert_eq!(cfg.ws_url, v.expected.ws_url);
-            assert_eq!(cfg.token, v.expected.token);
-            assert_eq!(cfg.key_base64url, v.expected.key_base64url);
-            assert_eq!(hex::encode(cfg.key_bytes), v.expected.key_hex);
-            assert_eq!(cfg.device_id, v.expected.device_id);
-            assert_eq!(cfg.device_name, v.expected.device_name);
+            let dbg = format!("{link:?}");
+            match &link {
+                PairingLink::V1(cfg) => {
+                    assert_eq!(cfg.version, v.expected.v);
+                    assert_eq!(cfg.server_url, v.expected.url);
+                    assert_eq!(cfg.ws_url, v.expected.ws_url);
+                    assert_eq!(cfg.token, v.expected.token);
+                    assert_eq!(cfg.key_base64url, v.expected.key_base64url);
+                    assert_eq!(hex::encode(cfg.key_bytes), v.expected.key_hex);
+                    assert_eq!(cfg.device_id, v.expected.device_id);
+                    assert_eq!(cfg.device_name, v.expected.device_name);
+                    assert!(!dbg.contains(&cfg.token), "Debug leaked token!");
+                    assert!(!dbg.contains(&cfg.key_base64url), "Debug leaked K_master!");
+                }
+                PairingLink::V2 {
+                    server_url,
+                    ws_url,
+                    code,
+                    key_base64url,
+                    key_bytes,
+                    device_name,
+                } => {
+                    assert_eq!(2, v.expected.v);
+                    assert_eq!(server_url, &v.expected.url);
+                    assert_eq!(ws_url, &v.expected.ws_url);
+                    assert_eq!(code, &v.expected.code);
+                    assert_eq!(key_base64url, &v.expected.key_base64url);
+                    assert_eq!(hex::encode(key_bytes), v.expected.key_hex);
+                    assert_eq!(device_name, &v.expected.device_name);
+                    assert!(!dbg.contains(code), "Debug leaked code!");
+                    assert!(!dbg.contains(key_base64url), "Debug leaked K_master!");
 
-            // Ensure Debug redacts secrets.
-            let dbg = format!("{cfg:?}");
-            assert!(!dbg.contains(&cfg.token), "Debug leaked token!");
-            assert!(!dbg.contains(&cfg.key_base64url), "Debug leaked K_master!");
+                    let rebuilt = build_pairing_uri_v2(server_url, code, key_base64url, device_name);
+                    assert_eq!(parse_pairing_link(&rebuilt).unwrap(), link);
+                    let svg = render_qr_svg(&rebuilt).unwrap();
+                    assert!(svg.contains("<svg") && svg.contains("</svg>"));
+                }
+            }
         }
 
         for inv in &tv.pairing_uri_vectors.invalid {
             assert!(
-                parse_pairing_uri(&inv.uri).is_err(),
+                parse_pairing_link(&inv.uri).is_err(),
                 "expected invalid pairing uri {} to fail",
                 inv.name
             );

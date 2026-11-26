@@ -29,8 +29,10 @@ private data class KdfVector(
     @SerialName("k_master_base64url") val kMasterBase64Url: String,
     @SerialName("event_info") val eventInfo: String,
     @SerialName("blob_info") val blobInfo: String,
+    @SerialName("kcv_info") val kcvInfo: String,
     @SerialName("k_event_hex") val kEventHex: String,
-    @SerialName("k_blob_hex") val kBlobHex: String
+    @SerialName("k_blob_hex") val kBlobHex: String,
+    @SerialName("kcv_hex") val kcvHex: String
 )
 
 @Serializable
@@ -73,10 +75,11 @@ private data class ExpectedPairing(
     val v: Int,
     val url: String,
     @SerialName("ws_url") val wsUrl: String,
-    val token: String,
+    val token: String = "",
+    val code: String = "",
     @SerialName("key_base64url") val keyBase64Url: String,
     @SerialName("key_hex") val keyHex: String,
-    @SerialName("device_id") val deviceId: String,
+    @SerialName("device_id") val deviceId: String = "",
     @SerialName("device_name") val deviceName: String
 )
 
@@ -117,6 +120,8 @@ class CryptoVectorsTest {
         val engine = CryptoEngine(kMaster)
         assertEquals(vectors.kdf.kEventHex, bytesToHex(engine.kEvent))
         assertEquals(vectors.kdf.kBlobHex, bytesToHex(engine.kBlob))
+        assertEquals(CryptoEngine.KCV_INFO, vectors.kdf.kcvInfo)
+        assertEquals(vectors.kdf.kcvHex, CryptoEngine.computeKcv(kMaster))
         assertFalse("kEvent and kBlob must be domain-separated", engine.kEvent.contentEquals(engine.kBlob))
     }
 
@@ -211,30 +216,44 @@ class CryptoVectorsTest {
         assertTrue(vectors.pairingUriVectors.invalid.isNotEmpty())
 
         for (tc in vectors.pairingUriVectors.valid) {
-            val parsed = PairingUriParser.parse(tc.uri).getOrElse {
+            val parsed = PairingUriParser.parseLink(tc.uri).getOrElse {
                 throw AssertionError("Valid pairing URI ${tc.name} failed: ${it.message}", it)
             }
             assertEquals("v (${tc.name})", tc.expected.v, parsed.version)
             assertEquals("url (${tc.name})", tc.expected.url, parsed.serverUrl)
             assertEquals("ws_url (${tc.name})", tc.expected.wsUrl, parsed.wsUrl)
-            assertEquals("token (${tc.name})", tc.expected.token, parsed.token)
             assertEquals("key_base64url (${tc.name})", tc.expected.keyBase64Url, parsed.keyBase64Url)
             assertEquals("key_hex (${tc.name})", tc.expected.keyHex, bytesToHex(parsed.keyBytes))
-            assertEquals("device_id (${tc.name})", tc.expected.deviceId, parsed.deviceId)
             assertEquals("device_name (${tc.name})", tc.expected.deviceName, parsed.deviceName)
 
-            // Round-trip encode -> parse
-            val roundTrip = PairingUriParser.parse(PairingUriParser.encode(parsed)).getOrThrow()
-            assertEquals(parsed, roundTrip)
-
-            // Never leak secrets in toString()
             val summary = parsed.toString()
-            assertFalse(summary.contains(parsed.token))
             assertFalse(summary.contains(parsed.keyBase64Url))
+
+            when (parsed) {
+                is PairingLink.V1 -> {
+                    assertEquals("token (${tc.name})", tc.expected.token, parsed.config.token)
+                    assertEquals("device_id (${tc.name})", tc.expected.deviceId, parsed.config.deviceId)
+                    val roundTrip = PairingUriParser.parse(PairingUriParser.encode(parsed.config)).getOrThrow()
+                    assertEquals(parsed.config, roundTrip)
+                    assertFalse(summary.contains(parsed.config.token))
+                }
+                is PairingLink.V2 -> {
+                    assertEquals("code (${tc.name})", tc.expected.code, parsed.code)
+                    val encoded = PairingUriParser.encodeV2(
+                        parsed.serverUrl,
+                        parsed.code,
+                        parsed.keyBase64Url,
+                        parsed.deviceName
+                    )
+                    val roundTrip = PairingUriParser.parseLink(encoded).getOrThrow()
+                    assertEquals(parsed, roundTrip)
+                    assertFalse(summary.contains(parsed.code))
+                }
+            }
         }
 
         for (tc in vectors.pairingUriVectors.invalid) {
-            val res = PairingUriParser.parse(tc.uri)
+            val res = PairingUriParser.parseLink(tc.uri)
             assertTrue(
                 "Invalid pairing URI ${tc.name} (${tc.reason}) unexpectedly succeeded: ${res.getOrNull()}",
                 res.isFailure

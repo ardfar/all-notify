@@ -55,6 +55,13 @@ abstract class AllNotifyDatabase : RoomDatabase() {
         kvStateDao().put(KvStateEntity(KvKeys.FILTER_MODE, mode))
     }
 
+    suspend fun getCanAddDevices(): Boolean =
+        kvStateDao().get(KvKeys.CAN_ADD_DEVICES) == "true"
+
+    suspend fun setCanAddDevices(trusted: Boolean) {
+        kvStateDao().put(KvStateEntity(KvKeys.CAN_ADD_DEVICES, trusted.toString()))
+    }
+
     /** Enforces 30-day / 5,000-row retention and removes expired outbox & orphaned attachment files. */
     suspend fun pruneRetention(
         blobCache: BlobCacheManager,

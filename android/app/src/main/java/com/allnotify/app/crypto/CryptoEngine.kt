@@ -83,7 +83,24 @@ class CryptoEngine(kMaster: ByteArray) {
     companion object {
         const val EVENT_INFO = "all-notify:v1:event"
         const val BLOB_INFO = "all-notify:v1:blob"
+        const val KCV_INFO = "all-notify:v1:kcv"
         private val BASE64URL_REGEX = Regex("^[A-Za-z0-9_-]+$")
+
+        fun computeKcv(kMaster: ByteArray): String {
+            require(kMaster.size == 32) { "K_master must be 32 bytes" }
+            val bytes = HkdfSha256.derive(
+                ikm = kMaster,
+                info = KCV_INFO.toByteArray(Charsets.UTF_8),
+                length = 16
+            )
+            val sb = StringBuilder(32)
+            for (b in bytes) {
+                val v = b.toInt() and 0xff
+                sb.append("0123456789abcdef"[v ushr 4])
+                sb.append("0123456789abcdef"[v and 0x0f])
+            }
+            return sb.toString()
+        }
 
         fun eventAad(eventId: String, senderDeviceId: String): ByteArray =
             "v1|$eventId|$senderDeviceId".toByteArray(Charsets.UTF_8)

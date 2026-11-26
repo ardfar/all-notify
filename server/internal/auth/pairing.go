@@ -1,24 +1,46 @@
 package auth
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+
+	"golang.org/x/crypto/hkdf"
 )
+
+const KCVKDFInfo = "all-notify:v1:kcv"
+
+var PairingCodePattern = regexp.MustCompile(`^pc_[A-Za-z0-9_-]{22}$`)
 
 type PairingData struct {
 	V          int
 	URL        string
 	WSURL      string
 	Token      string
+	Code       string
 	KeyB64URL  string
 	KeyHex     string
 	DeviceID   string
 	DeviceName string
+}
+
+func ComputeKCV(kMaster []byte) (string, error) {
+	if len(kMaster) != 32 {
+		return "", errors.New("k_master must be 32 bytes")
+	}
+	r := hkdf.New(sha256.New, kMaster, nil, []byte(KCVKDFInfo))
+	out := make([]byte, 16)
+	if _, err := io.ReadFull(r, out); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(out), nil
 }
 
 func ValidateMasterKeyB64(keyB64 string) ([]byte, error) {
@@ -74,6 +96,29 @@ func BuildPairingURI(serverURL, token, keyB64, deviceID, deviceName string) (str
 	), nil
 }
 
+func BuildPairingURIv2(serverURL, code, keyB64, deviceName string) (string, error) {
+	cleanURL, err := NormalizeServerURL(serverURL)
+	if err != nil {
+		return "", err
+	}
+	if !PairingCodePattern.MatchString(code) {
+		return "", errors.New("invalid pairing code")
+	}
+	if _, err := ValidateMasterKeyB64(keyB64); err != nil {
+		return "", err
+	}
+	if deviceName == "" {
+		return "", errors.New("name is required")
+	}
+	return fmt.Sprintf(
+		"allnotify://pair?v=2&url=%s&code=%s&key=%s&name=%s",
+		queryEscapeRFC3986(cleanURL),
+		queryEscapeRFC3986(code),
+		queryEscapeRFC3986(keyB64),
+		queryEscapeRFC3986(deviceName),
+	), nil
+}
+
 func ParsePairingURI(raw string) (PairingData, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -94,7 +139,7 @@ func ParsePairingURI(raw string) (PairingData, error) {
 		return PairingData{}, errors.New("missing v")
 	}
 	vInt, err := strconv.Atoi(vStr)
-	if err != nil || vInt != 1 {
+	if err != nil || (vInt != 1 && vInt != 2) {
 		return PairingData{}, errors.New("unsupported version")
 	}
 
@@ -104,14 +149,6 @@ func ParsePairingURI(raw string) (PairingData, error) {
 	}
 	wsURL := "wss://" + strings.TrimPrefix(cleanURL, "https://") + "/v1/ws"
 
-	token := q.Get("token")
-	if token == "" {
-		return PairingData{}, errors.New("missing token")
-	}
-	deviceID := q.Get("device_id")
-	if deviceID == "" {
-		return PairingData{}, errors.New("missing device_id")
-	}
 	deviceName := q.Get("name")
 	if deviceName == "" {
 		return PairingData{}, errors.New("missing name")
@@ -123,14 +160,34 @@ func ParsePairingURI(raw string) (PairingData, error) {
 		return PairingData{}, err
 	}
 
-	return PairingData{
+	out := PairingData{
 		V:          vInt,
 		URL:        cleanURL,
 		WSURL:      wsURL,
-		Token:      token,
 		KeyB64URL:  keyB64,
 		KeyHex:     hex.EncodeToString(keyBytes),
-		DeviceID:   deviceID,
 		DeviceName: deviceName,
-	}, nil
+	}
+	if vInt == 1 {
+		token := q.Get("token")
+		if token == "" {
+			return PairingData{}, errors.New("missing token")
+		}
+		deviceID := q.Get("device_id")
+		if deviceID == "" {
+			return PairingData{}, errors.New("missing device_id")
+		}
+		out.Token = token
+		out.DeviceID = deviceID
+	} else {
+		if q.Has("token") || q.Has("device_id") {
+			return PairingData{}, errors.New("v2 pairing uri must not contain token or device_id")
+		}
+		code := q.Get("code")
+		if !PairingCodePattern.MatchString(code) {
+			return PairingData{}, errors.New("invalid or missing pairing code")
+		}
+		out.Code = code
+	}
+	return out, nil
 }

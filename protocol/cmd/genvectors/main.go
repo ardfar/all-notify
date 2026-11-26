@@ -20,6 +20,7 @@ const (
 	protocolVersion = 1
 	eventKDFInfo    = "all-notify:v1:event"
 	blobKDFInfo     = "all-notify:v1:blob"
+	kcvKDFInfo      = "all-notify:v1:kcv"
 )
 
 type TestVectors struct {
@@ -37,8 +38,10 @@ type KDFVector struct {
 	KMasterB64URL string `json:"k_master_base64url"`
 	EventInfo     string `json:"event_info"`
 	BlobInfo      string `json:"blob_info"`
+	KCVInfo       string `json:"kcv_info"`
 	KEventHex     string `json:"k_event_hex"`
 	KBlobHex      string `json:"k_blob_hex"`
+	KCVHex        string `json:"kcv_hex"`
 }
 
 type EventVector struct {
@@ -76,10 +79,11 @@ type ExpectedPairData struct {
 	V          int    `json:"v"`
 	URL        string `json:"url"`
 	WSURL      string `json:"ws_url"`
-	Token      string `json:"token"`
+	Token      string `json:"token,omitempty"`
+	Code       string `json:"code,omitempty"`
 	KeyB64URL  string `json:"key_base64url"`
 	KeyHex     string `json:"key_hex"`
-	DeviceID   string `json:"device_id"`
+	DeviceID   string `json:"device_id,omitempty"`
 	DeviceName string `json:"device_name"`
 }
 
@@ -89,9 +93,9 @@ type InvalidPairingURI struct {
 	Reason string `json:"reason"`
 }
 
-func deriveKey(kMaster []byte, info string) ([]byte, error) {
+func deriveKey(kMaster []byte, info string, length int) ([]byte, error) {
 	r := hkdf.New(sha256.New, kMaster, nil, []byte(info))
-	out := make([]byte, 32)
+	out := make([]byte, length)
 	if _, err := io.ReadFull(r, out); err != nil {
 		return nil, err
 	}
@@ -123,11 +127,15 @@ func buildVectors() (TestVectors, error) {
 	kMaster := mustHex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
 	kMasterB64 := base64.RawURLEncoding.EncodeToString(kMaster)
 
-	kEvent, err := deriveKey(kMaster, eventKDFInfo)
+	kEvent, err := deriveKey(kMaster, eventKDFInfo, 32)
 	if err != nil {
 		return TestVectors{}, err
 	}
-	kBlob, err := deriveKey(kMaster, blobKDFInfo)
+	kBlob, err := deriveKey(kMaster, blobKDFInfo, 32)
+	if err != nil {
+		return TestVectors{}, err
+	}
+	kcv, err := deriveKey(kMaster, kcvKDFInfo, 16)
 	if err != nil {
 		return TestVectors{}, err
 	}
@@ -263,6 +271,32 @@ func buildVectors() (TestVectors, error) {
 					DeviceName: "Work PC",
 				},
 			},
+			{
+				Name: "v2_standard_https_uri",
+				URI:  fmt.Sprintf("allnotify://pair?v=2&url=https%%3A%%2F%%2Fnotify.example.com&code=pc_AAECAwQFBgcICQoLDA0ODw&key=%s&name=Pixel%%209", kMasterB64),
+				Expected: ExpectedPairData{
+					V:          2,
+					URL:        "https://notify.example.com",
+					WSURL:      "wss://notify.example.com/v1/ws",
+					Code:       "pc_AAECAwQFBgcICQoLDA0ODw",
+					KeyB64URL:  kMasterB64,
+					KeyHex:     hex.EncodeToString(kMaster),
+					DeviceName: "Pixel 9",
+				},
+			},
+			{
+				Name: "v2_custom_port_subpath_and_url_safe_code",
+				URI:  fmt.Sprintf("allnotify://pair?v=2&url=https%%3A%%2F%%2Fnotify.example.com%%3A8443%%2Frelay%%2F&code=pc_aB3-_9xYz0123456789_-Q&key=%s&name=Work%%20Mac", urlSafeKeyB64),
+				Expected: ExpectedPairData{
+					V:          2,
+					URL:        "https://notify.example.com:8443/relay",
+					WSURL:      "wss://notify.example.com:8443/relay/v1/ws",
+					Code:       "pc_aB3-_9xYz0123456789_-Q",
+					KeyB64URL:  urlSafeKeyB64,
+					KeyHex:     hex.EncodeToString(urlSafeKey),
+					DeviceName: "Work Mac",
+				},
+			},
 		},
 		Invalid: []InvalidPairingURI{
 			{
@@ -282,8 +316,8 @@ func buildVectors() (TestVectors, error) {
 			},
 			{
 				Name:   "unsupported_version",
-				URI:    fmt.Sprintf("allnotify://pair?v=2&url=https%%3A%%2F%%2Fnotify.example.com&token=tok&key=%s&device_id=dev_1&name=Phone", kMasterB64),
-				Reason: "only protocol version 1 is supported",
+				URI:    fmt.Sprintf("allnotify://pair?v=3&url=https%%3A%%2F%%2Fnotify.example.com&code=pc_AAECAwQFBgcICQoLDA0ODw&key=%s&name=Phone", kMasterB64),
+				Reason: "only protocol versions 1 and 2 are supported",
 			},
 			{
 				Name:   "missing_version",
@@ -340,6 +374,31 @@ func buildVectors() (TestVectors, error) {
 				URI:    fmt.Sprintf("allnotify://pair?v=1&url=https%%3A%%2F%%2Fnotify.example.com&token=tok&key=%s&device_id=dev_1", kMasterB64),
 				Reason: "name parameter is required",
 			},
+			{
+				Name:   "v2_with_token",
+				URI:    fmt.Sprintf("allnotify://pair?v=2&url=https%%3A%%2F%%2Fnotify.example.com&code=pc_AAECAwQFBgcICQoLDA0ODw&token=tok_1&key=%s&name=Phone", kMasterB64),
+				Reason: "v2 pairing uri must not contain token",
+			},
+			{
+				Name:   "v2_with_device_id",
+				URI:    fmt.Sprintf("allnotify://pair?v=2&url=https%%3A%%2F%%2Fnotify.example.com&code=pc_AAECAwQFBgcICQoLDA0ODw&device_id=dev_1&key=%s&name=Phone", kMasterB64),
+				Reason: "v2 pairing uri must not contain device_id",
+			},
+			{
+				Name:   "v2_missing_code",
+				URI:    fmt.Sprintf("allnotify://pair?v=2&url=https%%3A%%2F%%2Fnotify.example.com&key=%s&name=Phone", kMasterB64),
+				Reason: "code parameter is required for v2",
+			},
+			{
+				Name:   "v2_malformed_code",
+				URI:    fmt.Sprintf("allnotify://pair?v=2&url=https%%3A%%2F%%2Fnotify.example.com&code=pc_short&key=%s&name=Phone", kMasterB64),
+				Reason: "code must match ^pc_[A-Za-z0-9_-]{22}$",
+			},
+			{
+				Name:   "v2_missing_name",
+				URI:    fmt.Sprintf("allnotify://pair?v=2&url=https%%3A%%2F%%2Fnotify.example.com&code=pc_AAECAwQFBgcICQoLDA0ODw&key=%s", kMasterB64),
+				Reason: "name parameter is required",
+			},
 		},
 	}
 
@@ -352,8 +411,10 @@ func buildVectors() (TestVectors, error) {
 			KMasterB64URL: kMasterB64,
 			EventInfo:     eventKDFInfo,
 			BlobInfo:      blobKDFInfo,
+			KCVInfo:       kcvKDFInfo,
 			KEventHex:     hex.EncodeToString(kEvent),
 			KBlobHex:      hex.EncodeToString(kBlob),
+			KCVHex:        hex.EncodeToString(kcv),
 		},
 		EventVectors:      eventVectors,
 		BlobVectors:       blobVectors,

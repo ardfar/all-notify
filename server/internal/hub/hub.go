@@ -192,6 +192,13 @@ func (h *Hub) unregister(c *client) {
 	h.mu.Unlock()
 }
 
+func (h *Hub) IsOnline(deviceID string) bool {
+	h.mu.RLock()
+	_, ok := h.clients[deviceID]
+	h.mu.RUnlock()
+	return ok
+}
+
 func (h *Hub) DisconnectDevice(deviceID, reason string) bool {
 	h.mu.Lock()
 	c, ok := h.clients[deviceID]

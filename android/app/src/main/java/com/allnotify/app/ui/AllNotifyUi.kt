@@ -1,8 +1,5 @@
 package com.allnotify.app.ui
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
@@ -38,6 +35,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -84,7 +82,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.allnotify.app.AllNotifyApp
 import com.allnotify.app.BuildConfig
+import com.allnotify.app.crypto.CryptoEngine
 import com.allnotify.app.crypto.PairingConfig
+import com.allnotify.app.crypto.PairingLink
 import com.allnotify.app.crypto.PairingUriParser
 import com.allnotify.app.data.AppFilterEntity
 import com.allnotify.app.data.KvKeys
@@ -124,31 +124,64 @@ fun AllNotifyRoot(
 
     if (config == null) {
         OnboardingScreen(
+            app = app,
             permissionStatus = permissionStatus,
             initialUri = pendingPairingUri,
             onConsumePendingUri = onConsumePendingUri,
             onScanQr = onScanQr,
             onRequestPostNotifications = onRequestPostNotifications,
-            onRefreshPermissions = onRefreshPermissions,
-            onPaired = { app.applyPairing(it) }
+            onRefreshPermissions = onRefreshPermissions
         )
         return
     }
 
     var selectedTab by rememberSaveable { mutableStateOf(Tab.HOME) }
+    var showAddDevice by rememberSaveable { mutableStateOf(false) }
+    var pendingReplaceLink by remember { mutableStateOf<PairingLink?>(null) }
     val pausedRaw by app.database.kvStateDao().observe(KvKeys.PAUSED_UNTIL).collectAsState(initial = null)
+    val canAddDevicesRaw by app.database.kvStateDao().observe(KvKeys.CAN_ADD_DEVICES).collectAsState(initial = null)
+    val canAddDevices = canAddDevicesRaw == "true"
+    LaunchedEffect(canAddDevices) {
+        if (!canAddDevices) {
+            showAddDevice = false
+        }
+    }
     val isPaused = remember(pausedRaw) {
         val v = pausedRaw?.toLongOrNull() ?: 0L
         v == Long.MAX_VALUE || v > System.currentTimeMillis()
     }
     val scope = rememberCoroutineScope()
 
+    fun executePairing(link: PairingLink) {
+        scope.launch {
+            app.pairFromLink(link)
+                .onSuccess { paired ->
+                    Toast.makeText(context, "Paired as ${paired.deviceName}", Toast.LENGTH_SHORT).show()
+                }
+                .onFailure { err ->
+                    Toast.makeText(
+                        context,
+                        err.message ?: "Pairing failed",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+        }
+    }
+
     LaunchedEffect(pendingPairingUri) {
         if (!pendingPairingUri.isNullOrBlank()) {
-            PairingUriParser.parse(pendingPairingUri)
-                .onSuccess {
-                    app.applyPairing(it)
-                    Toast.makeText(context, "Paired as ${it.deviceName}", Toast.LENGTH_SHORT).show()
+            PairingUriParser.parseLink(pendingPairingUri)
+                .onSuccess { link ->
+                    val cur = config
+                    val needsConfirm = cur != null && (
+                        cur.serverUrl != link.serverUrl ||
+                            CryptoEngine.computeKcv(cur.keyBytes) != CryptoEngine.computeKcv(link.keyBytes)
+                        )
+                    if (needsConfirm) {
+                        pendingReplaceLink = link
+                    } else {
+                        executePairing(link)
+                    }
                 }
                 .onFailure { err ->
                     Toast.makeText(
@@ -159,6 +192,49 @@ fun AllNotifyRoot(
                 }
             onConsumePendingUri()
         }
+    }
+
+    val confirmLink = pendingReplaceLink
+    if (confirmLink != null) {
+        AlertDialog(
+            onDismissRequest = { pendingReplaceLink = null },
+            title = { Text("Replace current pairing?") },
+            text = {
+                Text("This pairing link uses a different relay server or encryption key than your current setup. Replace your current pairing?")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    pendingReplaceLink = null
+                    executePairing(confirmLink)
+                }) { Text("Replace") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingReplaceLink = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showAddDevice && canAddDevices) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("All-Notify") },
+                    actions = {
+                        ConnectionPill(connState = connState, isPaused = isPaused)
+                        Spacer(Modifier.width(12.dp))
+                    }
+                )
+            }
+        ) { padding ->
+            Box(Modifier.padding(padding).fillMaxSize()) {
+                AddDeviceScreen(
+                    app = app,
+                    config = config!!,
+                    onBack = { showAddDevice = false }
+                )
+            }
+        }
+        return
     }
 
     Scaffold(
@@ -207,7 +283,9 @@ fun AllNotifyRoot(
                 Tab.SETTINGS -> SettingsScreen(
                     app = app,
                     config = config!!,
+                    canAddDevices = canAddDevices,
                     permissionStatus = permissionStatus,
+                    onOpenAddDevice = { showAddDevice = true },
                     onScanQr = onScanQr,
                     onRequestPostNotifications = onRequestPostNotifications,
                     onRefreshPermissions = onRefreshPermissions
@@ -652,16 +730,18 @@ private fun AppFiltersScreen(app: AllNotifyApp) {
 
 @Composable
 private fun OnboardingScreen(
+    app: AllNotifyApp,
     permissionStatus: PermissionStatus,
     initialUri: String?,
     onConsumePendingUri: () -> Unit,
     onScanQr: () -> Unit,
     onRequestPostNotifications: () -> Unit,
-    onRefreshPermissions: () -> Unit,
-    onPaired: (PairingConfig) -> Unit
+    onRefreshPermissions: () -> Unit
 ) {
     var uriInput by rememberSaveable { mutableStateOf("") }
     var errorText by remember { mutableStateOf<String?>(null) }
+    var pairing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(initialUri) {
         if (!initialUri.isNullOrBlank()) {
@@ -682,7 +762,7 @@ private fun OnboardingScreen(
             Spacer(Modifier.height(12.dp))
             Text("All-Notify Setup", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text(
-                "Scan the QR code printed by your VPS server or paste an allnotify://pair URI.",
+                "Scan the pairing QR code from your All-Notify web admin page or a trusted device, or paste an allnotify://pair URI.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -695,6 +775,7 @@ private fun OnboardingScreen(
 
             Button(
                 onClick = onScanQr,
+                enabled = !pairing,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Scan Pairing QR Code")
@@ -716,14 +797,25 @@ private fun OnboardingScreen(
 
             Button(
                 onClick = {
-                    PairingUriParser.parse(uriInput)
-                        .onSuccess { onPaired(it) }
-                        .onFailure { errorText = it.message ?: "Invalid pairing URI" }
+                    val parsed = PairingUriParser.parseLink(uriInput)
+                    parsed.onFailure {
+                        errorText = it.message ?: "Invalid pairing URI"
+                    }.onSuccess { link ->
+                        pairing = true
+                        errorText = null
+                        scope.launch {
+                            app.pairFromLink(link)
+                                .onFailure { err ->
+                                    errorText = err.message ?: "Pairing failed"
+                                }
+                            pairing = false
+                        }
+                    }
                 },
-                enabled = uriInput.isNotBlank(),
+                enabled = !pairing && uriInput.isNotBlank(),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Pair Device")
+                Text(if (pairing) "Pairing..." else "Pair Device")
             }
         }
     }
@@ -733,7 +825,9 @@ private fun OnboardingScreen(
 private fun SettingsScreen(
     app: AllNotifyApp,
     config: PairingConfig,
+    canAddDevices: Boolean,
     permissionStatus: PermissionStatus,
+    onOpenAddDevice: () -> Unit,
     onScanQr: () -> Unit,
     onRequestPostNotifications: () -> Unit,
     onRefreshPermissions: () -> Unit
@@ -763,25 +857,20 @@ private fun SettingsScreen(
             onRefresh = onRefreshPermissions
         )
 
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Pair Another Device", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Copy the group master key or server CLI command to mint a separate token for another phone or laptop.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = {
-                        copyToClipboard(context, "All-Notify Group Key", config.keyBase64Url)
-                    }) {
-                        Text("Copy Group Key")
-                    }
-                    OutlinedButton(onClick = {
-                        val cmd = PairingUriParser.formatAddDeviceCommand(config.serverUrl, config.keyBase64Url)
-                        copyToClipboard(context, "All-Notify Token Create", cmd)
-                    }) {
-                        Text("Copy CLI Cmd")
+        if (canAddDevices) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Add Device", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Create a one-time pairing QR code to add another phone or laptop to your All-Notify group.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(
+                        onClick = onOpenAddDevice,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Add Device")
                     }
                 }
             }
@@ -874,16 +963,4 @@ private fun PermissionRow(title: String, granted: Boolean, onAction: () -> Unit)
             }
         }
     }
-}
-
-private fun copyToClipboard(context: Context, label: String, text: String) {
-    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    val clip = ClipData.newPlainText(label, text)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        clip.description.extras = android.os.PersistableBundle().apply {
-            putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true)
-        }
-    }
-    cm.setPrimaryClip(clip)
-    Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
 }

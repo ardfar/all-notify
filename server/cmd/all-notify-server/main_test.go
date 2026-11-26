@@ -35,7 +35,7 @@ func TestCLIKeygenAndTokenLifecycle(t *testing.T) {
 		t.Fatalf("keygen must not touch DB")
 	}
 
-	// 2. token create with --url and --key prints valid pairing URI + QR.
+	// 2. token create rejects --key/--url and points to /admin or pair create.
 	out.Reset()
 	errBuf.Reset()
 	if err := run(ctx, []string{
@@ -45,33 +45,58 @@ func TestCLIKeygenAndTokenLifecycle(t *testing.T) {
 		"--platform", "android",
 		"--url", "https://notify.example.com/",
 		"--key", kMasterB64,
+	}, &out, &errBuf); err == nil || !strings.Contains(err.Error(), "/admin") || !strings.Contains(err.Error(), "pair create") {
+		t.Fatalf("expected error pointing to /admin and pair create, got: %v", err)
+	}
+
+	// 2b. token create works without --key/--url and supports --can-add-devices.
+	out.Reset()
+	errBuf.Reset()
+	if err := run(ctx, []string{
+		"token", "create",
+		"--data-dir", dataDir,
+		"--name", "Pixel 9",
+		"--platform", "android",
+		"--can-add-devices",
 	}, &out, &errBuf); err != nil {
 		t.Fatalf("token create failed: %v", err)
 	}
 	output := out.String()
-	var devID, rawToken, pairingURI string
+	var devID, rawToken string
 	for _, line := range strings.Split(output, "\n") {
 		switch {
 		case strings.HasPrefix(line, "Device ID:"):
 			devID = strings.TrimSpace(strings.TrimPrefix(line, "Device ID:"))
 		case strings.HasPrefix(line, "Token:"):
 			rawToken = strings.TrimSpace(strings.TrimPrefix(line, "Token:"))
-		case strings.HasPrefix(line, "Pairing URI:"):
-			pairingURI = strings.TrimSpace(strings.TrimPrefix(line, "Pairing URI:"))
 		}
 	}
-	if devID == "" || rawToken == "" || pairingURI == "" {
+	if devID == "" || rawToken == "" || !strings.Contains(output, "Can Add Devices: true") {
 		t.Fatalf("missing fields in token create output:\n%s", output)
 	}
-	parsed, err := auth.ParsePairingURI(pairingURI)
-	if err != nil {
-		t.Fatalf("ParsePairingURI(%q): %v", pairingURI, err)
+
+	// 2c. pair create outputs valid pc_ code and does not store raw code in DB.
+	out.Reset()
+	errBuf.Reset()
+	if err := run(ctx, []string{
+		"pair", "create",
+		"--data-dir", dataDir,
+		"--name", "MacBook Pro",
+		"--platform", "macos",
+	}, &out, &errBuf); err != nil {
+		t.Fatalf("pair create failed: %v", err)
 	}
-	if parsed.DeviceID != devID || parsed.Token != rawToken || parsed.KeyB64URL != kMasterB64 || parsed.URL != "https://notify.example.com" || parsed.DeviceName != "Pixel 9" {
-		t.Fatalf("parsed URI mismatch: %+v", parsed)
+	var pairCode string
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(line, "Pairing Code:") {
+			pairCode = strings.TrimSpace(strings.TrimPrefix(line, "Pairing Code:"))
+		}
+	}
+	if !auth.PairingCodePattern.MatchString(pairCode) {
+		t.Fatalf("pair create invalid code %q:\n%s", pairCode, out.String())
 	}
 
-	// Zero-knowledge check: DB must NOT contain raw token or K_master anywhere.
+	// Zero-knowledge check: DB must NOT contain raw token, raw pairing code, or K_master anywhere.
 	dbBytes, err := os.ReadFile(filepath.Join(dataDir, "all-notify.db"))
 	if err != nil {
 		t.Fatalf("read db: %v", err)
@@ -79,16 +104,25 @@ func TestCLIKeygenAndTokenLifecycle(t *testing.T) {
 	if bytes.Contains(dbBytes, []byte(rawToken)) {
 		t.Fatalf("raw token leaked into SQLite database!")
 	}
+	if bytes.Contains(dbBytes, []byte(pairCode)) {
+		t.Fatalf("raw pairing code leaked into SQLite database!")
+	}
 	if bytes.Contains(dbBytes, []byte(kMasterB64)) {
 		t.Fatalf("K_master leaked into SQLite database!")
+	}
+
+	// 2d. admin reset-password prints password once.
+	out.Reset()
+	if err := run(ctx, []string{"admin", "reset-password", "--data-dir", dataDir}, &out, &errBuf); err != nil {
+		t.Fatalf("admin reset-password failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "ADMIN INITIAL PASSWORD") {
+		t.Fatalf("expected password output from admin reset-password, got:\n%s", out.String())
 	}
 
 	// 3. token create validation failures.
 	if err := run(ctx, []string{"token", "create", "--data-dir", dataDir, "--name", "X", "--platform", "ios"}, &out, &errBuf); err == nil {
 		t.Fatalf("expected error for unsupported platform")
-	}
-	if err := run(ctx, []string{"token", "create", "--data-dir", dataDir, "--name", "X", "--platform", "macos", "--url", "https://x.com"}, &out, &errBuf); err == nil {
-		t.Fatalf("expected error when --url given without --key")
 	}
 	if err := run(ctx, []string{"token", "list", "--data-dir", dataDir, "unexpected_extra"}, &out, &errBuf); err == nil {
 		t.Fatalf("expected error on unexpected positional arg for token list")
@@ -152,6 +186,10 @@ func TestCLIServeGracefulShutdown(t *testing.T) {
 		t.Fatalf("server did not become healthy; stderr:\n%s", errBuf.String())
 	}
 
+	if !strings.Contains(out.String(), "ADMIN INITIAL PASSWORD") {
+		t.Fatalf("expected initial admin password on first boot stdout, got: %q", out.String())
+	}
+
 	cancel()
 	select {
 	case err := <-done:
@@ -160,6 +198,37 @@ func TestCLIServeGracefulShutdown(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatalf("serve did not shut down cleanly")
+	}
+
+	// Second start on same dataDir must NOT print initial password again.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	var out2, errBuf2 bytes.Buffer
+	done2 := make(chan error, 1)
+	go func() {
+		done2 <- run(ctx2, []string{"serve", "--addr", "127.0.0.1:18924", "--data-dir", dataDir}, &out2, &errBuf2)
+	}()
+	deadline = time.Now().Add(3 * time.Second)
+	healthy = false
+	for time.Now().Before(deadline) {
+		resp, err := http.Get("http://127.0.0.1:18924/healthz")
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				healthy = true
+				break
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !healthy {
+		cancel2()
+		t.Fatalf("second serve did not become healthy; stderr:\n%s", errBuf2.String())
+	}
+	cancel2()
+	<-done2
+	if strings.Contains(out2.String(), "ADMIN INITIAL PASSWORD") {
+		t.Fatalf("second boot unexpectedly printed initial admin password again: %q", out2.String())
 	}
 }
 

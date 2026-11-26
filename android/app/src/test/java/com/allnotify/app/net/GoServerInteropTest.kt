@@ -8,8 +8,14 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.allnotify.app.crypto.CryptoEngine
 import com.allnotify.app.crypto.PairingConfig
+import com.allnotify.app.crypto.PairingLink
 import com.allnotify.app.crypto.PairingUriParser
 import com.allnotify.app.crypto.Ulid
+import com.allnotify.app.ui.QrCodeGenerator
+import com.google.zxing.BinaryBitmap
+import com.google.zxing.RGBLuminanceSource
+import com.google.zxing.common.HybridBinarizer
+import com.google.zxing.qrcode.QRCodeReader
 import com.allnotify.app.data.ActiveKeyMapEntity
 import com.allnotify.app.data.AllNotifyDatabase
 import com.allnotify.app.data.BlobCacheManager
@@ -101,24 +107,31 @@ class GoServerInteropTest {
         val port = ServerSocket(0).use { it.localPort }
         val httpBase = "http://127.0.0.1:$port"
 
-        // Mint real tokens via CLI and validate pairing URIs through Kotlin PairingUriParser!
+        // Mint real tokens via CLI and validate v1 pairing URIs through Kotlin PairingUriParser!
         fun mintDevice(name: String): PairingConfig {
             val out = runCmd(
                 workDir,
                 binFile.absolutePath,
                 "token", "create",
-                "--no-qr",
                 "--data-dir", dataDir.absolutePath,
                 "--name", name,
-                "--platform", "android",
-                "--url", "https://127.0.0.1:$port",
-                "--key", kMasterB64
+                "--platform", "android"
             )
-            val pairLine = out.lines()
-                .first { it.contains("allnotify://pair?") }
-                .substringAfter("Pairing URI:")
-                .trim()
-            val parsed = PairingUriParser.parse(pairLine).getOrThrow()
+            val devId = out.lines().first { it.startsWith("Device ID:") }.substringAfter(":").trim()
+            val token = out.lines().first { it.startsWith("Token:") }.substringAfter(":").trim()
+            val v1Uri = PairingUriParser.encode(
+                PairingConfig(
+                    version = 1,
+                    serverUrl = "https://127.0.0.1:$port",
+                    wsUrl = "wss://127.0.0.1:$port/v1/ws",
+                    token = token,
+                    keyBase64Url = kMasterB64,
+                    keyBytes = java.util.Base64.getUrlDecoder().decode(kMasterB64),
+                    deviceId = devId,
+                    deviceName = name
+                )
+            )
+            val parsed = PairingUriParser.parse(v1Uri).getOrThrow()
             // Redirect to local plain HTTP/WS test listener while keeping parsed deviceId/token/key intact
             return parsed.copy(
                 serverUrl = httpBase,
@@ -314,18 +327,25 @@ class GoServerInteropTest {
                 workDir,
                 binFile.absolutePath,
                 "token", "create",
-                "--no-qr",
                 "--data-dir", dataDir.absolutePath,
                 "--name", name,
-                "--platform", "android",
-                "--url", "https://127.0.0.1:$port",
-                "--key", kMasterB64
+                "--platform", "android"
             )
-            val pairLine = out.lines()
-                .first { it.contains("allnotify://pair?") }
-                .substringAfter("Pairing URI:")
-                .trim()
-            val parsed = PairingUriParser.parse(pairLine).getOrThrow()
+            val devId = out.lines().first { it.startsWith("Device ID:") }.substringAfter(":").trim()
+            val token = out.lines().first { it.startsWith("Token:") }.substringAfter(":").trim()
+            val v1Uri = PairingUriParser.encode(
+                PairingConfig(
+                    version = 1,
+                    serverUrl = "https://127.0.0.1:$port",
+                    wsUrl = "wss://127.0.0.1:$port/v1/ws",
+                    token = token,
+                    keyBase64Url = kMasterB64,
+                    keyBytes = java.util.Base64.getUrlDecoder().decode(kMasterB64),
+                    deviceId = devId,
+                    deviceName = name
+                )
+            )
+            val parsed = PairingUriParser.parse(v1Uri).getOrThrow()
             return parsed.copy(serverUrl = httpBase, wsUrl = "ws://127.0.0.1:$port/v1/ws")
         }
 
@@ -709,6 +729,179 @@ class GoServerInteropTest {
             dbA.close()
             dbB.close()
             dbC.close()
+            serverProc.destroyForcibly()
+        }
+    }
+
+    @Test
+    fun phase5PairingClaimTrustedAddDeviceAndQrRoundTrip() = runBlocking {
+        val serverDir = findServerDir()
+        Assume.assumeNotNull("server/ directory not found", serverDir)
+        val goAvailable = runCatching { runCmd(serverDir!!, "go", "version") }.isSuccess
+        Assume.assumeTrue("go toolchain not available", goAvailable)
+
+        val workDir = tempFolder.newFolder("go-phase5-pairing")
+        val exeSuffix = if (System.getProperty("os.name").orEmpty().lowercase().contains("win")) ".exe" else ""
+        val binFile = File(workDir, "all-notify-server$exeSuffix")
+        val dataDir = File(workDir, "data").apply { mkdirs() }
+        runCmd(serverDir!!, "go", "build", "-o", binFile.absolutePath, "./cmd/all-notify-server")
+
+        val kMasterB64 = runCmd(workDir, binFile.absolutePath, "keygen").trim()
+        val kMasterBytes = java.util.Base64.getUrlDecoder().decode(kMasterB64)
+        val port = ServerSocket(0).use { it.localPort }
+        val httpBase = "http://127.0.0.1:$port"
+
+        // Create a trusted pairing code via CLI `pair create --can-add-devices`
+        val pairOut = runCmd(
+            workDir,
+            binFile.absolutePath,
+            "pair", "create",
+            "--data-dir", dataDir.absolutePath,
+            "--name", "Trusted Phone",
+            "--platform", "android",
+            "--can-add-devices"
+        )
+        val initialCode = pairOut.lines().first { it.startsWith("Pairing Code:") }.substringAfter(":").trim()
+
+        val serverProc = ProcessBuilder(
+            binFile.absolutePath, "serve", "--addr", "127.0.0.1:$port", "--data-dir", dataDir.absolutePath
+        ).redirectErrorStream(true).start()
+
+        val httpClient = OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS).build()
+        val pairingApi = PairingApiClient(httpClient)
+        val ctx = ApplicationProvider.getApplicationContext<Application>()
+        val dbA = Room.inMemoryDatabaseBuilder(ctx, AllNotifyDatabase::class.java).allowMainThreadQueries().build()
+        val dbB = Room.inMemoryDatabaseBuilder(ctx, AllNotifyDatabase::class.java).allowMainThreadQueries().build()
+        val cacheA = BlobCacheManager(File(workDir, "cacheA"))
+        val cacheB = BlobCacheManager(File(workDir, "cacheB"))
+
+        var wsA: RelayWsClient? = null
+        var wsB: RelayWsClient? = null
+        try {
+            withTimeout(10_000L) {
+                while (true) {
+                    val ok = runCatching {
+                        httpClient.newCall(Request.Builder().url("$httpBase/healthz").build()).execute().use { it.isSuccessful }
+                    }.getOrDefault(false)
+                    if (ok) break
+                    delay(50L)
+                }
+            }
+
+            // 1. Parse v2 link + claim happy path
+            val initialV2Uri = PairingUriParser.encodeV2("https://127.0.0.1:$port", initialCode, kMasterB64, "Trusted Phone")
+            val parsedV2 = PairingUriParser.parseLink(initialV2Uri).getOrThrow() as PairingLink.V2
+            assertEquals(initialCode, parsedV2.code)
+
+            val claimA = pairingApi.claimCode(httpBase, parsedV2.code, "android")
+            assertEquals("Trusted Phone", claimA.name)
+            assertTrue(claimA.canAddDevices)
+
+            // 2. Reused code returns 410 CODE_EXPIRED_OR_USED
+            val reuseErr = runCatching { pairingApi.claimCode(httpBase, parsedV2.code, "android") }.exceptionOrNull()
+            assertTrue("expected PairingApiException 410, got $reuseErr", reuseErr is PairingApiException && reuseErr.httpStatus == 410)
+
+            // 3. GET /v1/me confirms can_add_devices=true for Phone A
+            val meA = pairingApi.fetchMe(httpBase, claimA.token)
+            assertTrue(meA.canAddDevices)
+
+            // 4. Trusted Phone A creates pairing code for Phone B -> QR round-trip (encode -> decode -> parse)
+            val createdB = pairingApi.createPairingCode(httpBase, claimA.token, "Phone B", "android")
+            assertTrue(!createdB.canAddDevices)
+            val v2UriB = PairingUriParser.encodeV2("https://127.0.0.1:$port", createdB.code, kMasterB64, createdB.name)
+
+            val qrBmp = QrCodeGenerator.encode(v2UriB, 400)
+            val pixels = IntArray(qrBmp.width * qrBmp.height)
+            qrBmp.getPixels(pixels, 0, qrBmp.width, 0, 0, qrBmp.width, qrBmp.height)
+            val decodedQr = QRCodeReader().decode(
+                BinaryBitmap(HybridBinarizer(RGBLuminanceSource(qrBmp.width, qrBmp.height, pixels)))
+            ).text
+            assertEquals(v2UriB, decodedQr)
+            val parsedB = PairingUriParser.parseLink(decodedQr).getOrThrow() as PairingLink.V2
+            assertEquals(createdB.code, parsedB.code)
+
+            // 5. Phone B claims the code -> untrusted -> 403 NOT_TRUSTED on POST /v1/pairing-codes
+            val claimB = pairingApi.claimCode(httpBase, parsedB.code, "android")
+            assertTrue(!claimB.canAddDevices)
+            val meB = pairingApi.fetchMe(httpBase, claimB.token)
+            assertTrue(!meB.canAddDevices)
+
+            val untrustedErr = runCatching {
+                pairingApi.createPairingCode(httpBase, claimB.token, "Rogue", "android")
+            }.exceptionOrNull()
+            assertTrue("expected 403 NOT_TRUSTED, got $untrustedErr", untrustedErr is PairingApiException && untrustedErr.httpStatus == 403)
+
+            // Phone A's listPairingCodes shows code claimed
+            val codesA = pairingApi.listPairingCodes(httpBase, claimA.token)
+            assertEquals("claimed", codesA.first { it.codeId == createdB.codeId }.status)
+
+            // 6. Both claimed devices connect via WS and relay an E2EE notification!
+            val cfgA = PairingConfig(1, httpBase, "ws://127.0.0.1:$port/v1/ws", claimA.token, kMasterB64, kMasterBytes, claimA.deviceId, claimA.name)
+            val cfgB = PairingConfig(1, httpBase, "ws://127.0.0.1:$port/v1/ws", claimB.token, kMasterB64, kMasterBytes, claimB.deviceId, claimB.name)
+            val crypto = CryptoEngine(kMasterBytes)
+            val receivedOnB = CompletableDeferred<NotificationEntity>()
+
+            val noopFetcher = object : BlobFetcher {
+                override suspend fun fetchIcon(sha256: String, blobId: String): File? = null
+                override suspend fun fetchAttachment(blobId: String, sha256: String): File? = null
+            }
+            val pipeA = NotificationPipeline(
+                configProvider = { cfgA }, cryptoProvider = { crypto }, database = dbA,
+                blobCache = cacheA, blobFetcher = noopFetcher,
+                displayPort = object : MirroredDisplayPort {
+                    override fun showNotification(entity: NotificationEntity, iconFile: File?, attachmentFile: File?, silentUpdate: Boolean) {}
+                    override fun showReplaySummary(activeEntities: List<NotificationEntity>) {}
+                    override fun cancelMirrored(notificationRowId: Long) {}
+                    override fun isOsDndBlocking(): Boolean = false
+                },
+                remoteCancelPort = object : RemoteCancelPort { override fun cancelLocalBySbnKey(sbnKey: String) {} },
+                sendAck = { seq -> wsA?.sendAck(seq) }
+            )
+            val pipeB = NotificationPipeline(
+                configProvider = { cfgB }, cryptoProvider = { crypto }, database = dbB,
+                blobCache = cacheB, blobFetcher = noopFetcher,
+                displayPort = object : MirroredDisplayPort {
+                    override fun showNotification(entity: NotificationEntity, iconFile: File?, attachmentFile: File?, silentUpdate: Boolean) {
+                        receivedOnB.complete(entity)
+                    }
+                    override fun showReplaySummary(activeEntities: List<NotificationEntity>) {}
+                    override fun cancelMirrored(notificationRowId: Long) {}
+                    override fun isOsDndBlocking(): Boolean = false
+                },
+                remoteCancelPort = object : RemoteCancelPort { override fun cancelLocalBySbnKey(sbnKey: String) {} },
+                sendAck = { seq -> wsB?.sendAck(seq) }
+            )
+            wsA = RelayWsClient(httpClient, dbA, pipeA, backoffScheduleMs = longArrayOf(200L))
+            wsB = RelayWsClient(httpClient, dbB, pipeB, backoffScheduleMs = longArrayOf(200L))
+            wsA!!.start(cfgA)
+            wsB!!.start(cfgB)
+
+            withTimeout(5_000L) {
+                while (wsA!!.state.value != ConnectionState.CONNECTED || wsB!!.state.value != ConnectionState.CONNECTED) {
+                    delay(25L)
+                }
+            }
+            delay(150L)
+
+            val now = System.currentTimeMillis()
+            val evId = Ulid.generate(now)
+            val posted = NotificationPostedPayload(
+                notificationUid = "${cfgA.deviceId}:$now:p5",
+                senderDeviceName = cfgA.deviceName,
+                postedAt = now,
+                app = AppInfoPayload("com.example", "Example"),
+                content = ContentPayload("Phase 5", "Paired via one-time code!")
+            )
+            wsA!!.enqueueAndSend(evId, crypto.encryptEvent(evId, cfgA.deviceId, encodePostedPayload(posted)))
+
+            val got = withTimeout(5_000L) { receivedOnB.await() }
+            assertEquals("Phase 5", got.title)
+            assertEquals("Paired via one-time code!", got.body)
+        } finally {
+            runCatching { wsA?.shutdown() }
+            runCatching { wsB?.shutdown() }
+            dbA.close()
+            dbB.close()
             serverProc.destroyForcibly()
         }
     }

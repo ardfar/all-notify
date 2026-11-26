@@ -26,8 +26,14 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use all_notify_desktop_lib::crypto::{generate_ulid, parse_pairing_uri, CryptoEngine, PairingConfig};
+use all_notify_desktop_lib::crypto::{
+    build_pairing_uri_v2, decode_qr_from_image_bytes, generate_ulid, parse_pairing_link,
+    parse_pairing_uri, render_qr_svg, CryptoEngine, PairingConfig, PairingLink,
+};
 use all_notify_desktop_lib::notifier::{OsNotification, PlatformNotifier};
+use all_notify_desktop_lib::pairing::{
+    claim_pairing_code, create_pairing_code, fetch_device_me, list_pairing_codes,
+};
 use all_notify_desktop_lib::protocol::{
     sha256_hex, AppInfo, AttachmentInfo, ClientFrame, InnerPayload, NotificationContent,
     NotificationDismissed, NotificationPosted, ServerFrame,
@@ -141,25 +147,20 @@ impl RunningServer {
         }
     }
 
-    /// Mints a device via real CLI `token create`, parses its `allnotify://pair?...` URI via
-    /// the real Rust pairing parser, and adapts URLs to local HTTP/WS for testing.
+    /// Mints a device via real CLI `token create`, builds a v1 pairing URI locally,
+    /// parses it via the real Rust pairing parser, and adapts URLs to local HTTP/WS.
     fn mint_device(&self, name: &str, platform: &str) -> PairingConfig {
         let bin = server_binary();
         let out = Command::new(bin)
             .args([
                 "token",
                 "create",
-                "--no-qr",
                 "--data-dir",
                 self.data_dir.to_str().unwrap(),
                 "--name",
                 name,
                 "--platform",
                 platform,
-                "--url",
-                "https://relay.example.test",
-                "--key",
-                &self.k_master_b64,
             ])
             .output()
             .expect("token create");
@@ -169,12 +170,26 @@ impl RunningServer {
             String::from_utf8_lossy(&out.stderr)
         );
         let stdout = String::from_utf8_lossy(&out.stdout);
-        let pair_uri = stdout
+        let device_id = stdout
             .lines()
-            .find_map(|l| l.strip_prefix("Pairing URI:"))
-            .expect("Pairing URI line in CLI output")
+            .find_map(|l| l.strip_prefix("Device ID:"))
+            .expect("Device ID line in CLI output")
             .trim();
-        let mut cfg = parse_pairing_uri(pair_uri).expect("parse CLI pairing URI");
+        let token = stdout
+            .lines()
+            .find_map(|l| l.strip_prefix("Token:"))
+            .expect("Token line in CLI output")
+            .trim();
+        let mut pair_url = url::Url::parse("allnotify://pair").unwrap();
+        pair_url
+            .query_pairs_mut()
+            .append_pair("v", "1")
+            .append_pair("url", "https://relay.example.test")
+            .append_pair("token", token)
+            .append_pair("key", &self.k_master_b64)
+            .append_pair("device_id", device_id)
+            .append_pair("name", name);
+        let mut cfg = parse_pairing_uri(pair_url.as_str()).expect("parse v1 pairing URI");
         assert_eq!(cfg.key_bytes, self.k_master);
         assert_eq!(cfg.device_name, name);
         cfg.server_url = self.http_base.clone();
@@ -1125,4 +1140,207 @@ async fn e2e_07_revocation_disconnects_immediately_and_blocks_reconnect() {
         .await
         .unwrap();
     assert_eq!(blob_resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn e2e_08_phase5_pairing_admin_code_trusted_add_device_and_relay() {
+    use image::{ImageFormat, Luma};
+    use qrcode::QrCode;
+    use std::io::Cursor;
+
+    let srv = RunningServer::start().await;
+    let bin = server_binary();
+
+    // 1. Admin creates a trusted pairing code via CLI `pair create --can-add-devices`.
+    let out = Command::new(bin)
+        .args([
+            "pair",
+            "create",
+            "--data-dir",
+            srv.data_dir.to_str().unwrap(),
+            "--name",
+            "Trusted Mac",
+            "--platform",
+            "macos",
+            "--can-add-devices",
+        ])
+        .output()
+        .expect("pair create");
+    assert!(
+        out.status.success(),
+        "pair create failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let initial_code = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("Pairing Code:"))
+        .expect("Pairing Code line")
+        .trim()
+        .to_string();
+
+    // Build & parse v2 link locally (K_master never touches the server).
+    let v2_uri = build_pairing_uri_v2(
+        "https://relay.example.test",
+        &initial_code,
+        &srv.k_master_b64,
+        "Trusted Mac",
+    );
+    let PairingLink::V2 {
+        code: parsed_code, ..
+    } = parse_pairing_link(&v2_uri).expect("parse v2 URI")
+    else {
+        panic!("expected V2 link");
+    };
+    assert_eq!(parsed_code, initial_code);
+
+    // 2. Desktop claims the one-time code -> gets token + can_add_devices=true.
+    let claim_mac = claim_pairing_code(&srv.http, &srv.http_base, &parsed_code, "macos")
+        .await
+        .expect("claim trusted mac code");
+    assert_eq!(claim_mac.name, "Trusted Mac");
+    assert!(claim_mac.can_add_devices);
+
+    // Reusing the code fails with 410.
+    let reuse_err = claim_pairing_code(&srv.http, &srv.http_base, &parsed_code, "macos")
+        .await
+        .expect_err("reusing claimed code must fail");
+    assert_eq!(reuse_err.status, 410);
+
+    // GET /v1/me confirms can_add_devices=true.
+    let me_mac = fetch_device_me(&srv.http, &srv.http_base, &claim_mac.token)
+        .await
+        .expect("fetch /v1/me for trusted mac");
+    assert!(me_mac.can_add_devices);
+
+    // 3. Trusted desktop creates a pairing code for a second device ("Windows PC").
+    let created_win = create_pairing_code(
+        &srv.http,
+        &srv.http_base,
+        &claim_mac.token,
+        "Windows PC",
+        "windows",
+    )
+    .await
+    .expect("trusted mac create pairing code");
+    assert!(!created_win.can_add_devices);
+
+    let win_v2_uri = build_pairing_uri_v2(
+        "https://relay.example.test",
+        &created_win.code,
+        &srv.k_master_b64,
+        &created_win.name,
+    );
+    let svg = render_qr_svg(&win_v2_uri).expect("render qr svg");
+    assert!(svg.contains("<svg") && svg.contains("</svg>"));
+
+    // QR render -> decode -> parse round-trip.
+    let qr_img = QrCode::new(win_v2_uri.as_bytes())
+        .unwrap()
+        .render::<Luma<u8>>()
+        .min_dimensions(256, 256)
+        .build();
+    let mut png_bytes = Vec::new();
+    image::DynamicImage::ImageLuma8(qr_img)
+        .write_to(&mut Cursor::new(&mut png_bytes), ImageFormat::Png)
+        .unwrap();
+    let decoded = decode_qr_from_image_bytes(&png_bytes).expect("decode v2 QR PNG");
+    assert_eq!(decoded, win_v2_uri);
+    let PairingLink::V2 {
+        code: win_code, ..
+    } = parse_pairing_link(&decoded).expect("parse decoded v2 URI")
+    else {
+        panic!("expected V2 link");
+    };
+
+    // 4. Second client claims Windows code -> untrusted -> 403 on POST /v1/pairing-codes.
+    let claim_win = claim_pairing_code(&srv.http, &srv.http_base, &win_code, "windows")
+        .await
+        .expect("claim windows code");
+    assert!(!claim_win.can_add_devices);
+    let me_win = fetch_device_me(&srv.http, &srv.http_base, &claim_win.token)
+        .await
+        .expect("fetch /v1/me for untrusted win");
+    assert!(!me_win.can_add_devices);
+
+    let untrusted_err = create_pairing_code(
+        &srv.http,
+        &srv.http_base,
+        &claim_win.token,
+        "Rogue",
+        "android",
+    )
+    .await
+    .expect_err("untrusted device must get 403");
+    assert_eq!(untrusted_err.status, 403);
+
+    // Trusted Mac sees its code marked claimed.
+    let codes = list_pairing_codes(&srv.http, &srv.http_base, &claim_mac.token)
+        .await
+        .expect("list pairing codes");
+    assert_eq!(
+        codes
+            .iter()
+            .find(|c| c.code_id == created_win.code_id)
+            .map(|c| c.status.as_str()),
+        Some("claimed")
+    );
+
+    // 5. Connect claimed Windows desktop + claimed Mac (as WS sender) and verify live E2EE relay!
+    let win_cfg = PairingConfig {
+        version: 1,
+        server_url: srv.http_base.clone(),
+        ws_url: srv.ws_base.clone(),
+        token: claim_win.token,
+        key_base64url: srv.k_master_b64.clone(),
+        key_bytes: srv.k_master,
+        device_id: claim_win.device_id,
+        device_name: claim_win.name,
+        can_add_devices: claim_win.can_add_devices,
+    };
+    let win = DesktopNode::start(win_cfg).await;
+
+    let mac_cfg = PairingConfig {
+        version: 1,
+        server_url: srv.http_base.clone(),
+        ws_url: srv.ws_base.clone(),
+        token: claim_mac.token,
+        key_base64url: srv.k_master_b64.clone(),
+        key_bytes: srv.k_master,
+        device_id: claim_mac.device_id.clone(),
+        device_name: claim_mac.name.clone(),
+        can_add_devices: claim_mac.can_add_devices,
+    };
+    let mut mac_ws = connect_phone(&mac_cfg).await;
+
+    let now = now_unix_ms();
+    let uid = format!("{}:{now}:phase5", claim_mac.device_id);
+    let posted = InnerPayload::Posted(Box::new(NotificationPosted {
+        notification_uid: uid,
+        sender_device_name: "Trusted Mac".to_string(),
+        posted_at: now,
+        app: AppInfo {
+            package: "com.example.phase5".to_string(),
+            name: "Phase5App".to_string(),
+            icon_sha256: None,
+            icon_blob_id: None,
+        },
+        content: NotificationContent {
+            title: "Hello Phase 5".to_string(),
+            body: "Paired via trusted device QR!".to_string(),
+            sub_text: None,
+            category: None,
+            group_key: None,
+        },
+        attachments: vec![],
+    }));
+    send_inner(&mut mac_ws, &mac_cfg, &srv.crypto, &posted).await;
+
+    wait_until(Duration::from_secs(4), || {
+        !win.notifier.shown.lock().unwrap().is_empty()
+    })
+    .await;
+    let shown = win.notifier.shown.lock().unwrap();
+    assert_eq!(shown[0].title, "Hello Phase 5");
+    assert_eq!(shown[0].body, "Paired via trusted device QR!");
 }

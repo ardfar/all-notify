@@ -16,20 +16,55 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+//go:embed migration_001.sql
+var migration001SQL string
+
+const currentSchemaVersion = 1
+
 var (
-	ErrNotFound      = errors.New("not found")
-	ErrDeviceRevoked = errors.New("device revoked")
+	ErrNotFound          = errors.New("not found")
+	ErrDeviceRevoked     = errors.New("device revoked")
+	ErrCodeExpiredOrUsed = errors.New("pairing code expired or already used")
+	ErrTooManyPending    = errors.New("too many pending pairing codes")
+	ErrAlreadySet        = errors.New("setting already set")
 )
 
 type Device struct {
-	ID        string
-	Name      string
-	Platform  string
+	ID            string
+	Name          string
+	Platform      string
+	TokenHash     string
+	CanAddDevices bool
+	LastSeq       int64
+	CreatedAt     int64
+	LastSeen      *int64
+	RevokedAt     *int64
+}
+
+type PairingCode struct {
+	ID              string
+	CodeHash        string
+	Name            string
+	Platform        string
+	CanAddDevices   bool
+	CreatedBy       string
+	CreatedAt       int64
+	ExpiresAt       int64
+	ClaimedAt       *int64
+	ClaimedDeviceID *string
+	CancelledAt     *int64
+}
+
+type AdminCredential struct {
+	PasswordHash string
+	MustChange   bool
+	UpdatedAt    int64
+}
+
+type AdminSession struct {
 	TokenHash string
-	LastSeq   int64
 	CreatedAt int64
-	LastSeen  *int64
-	RevokedAt *int64
+	ExpiresAt int64
 }
 
 type OfflineEvent struct {
@@ -69,11 +104,81 @@ func Open(dbPath string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	if _, err := db.Exec(schemaSQL); err != nil {
+	if err := migrate(db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("apply schema: %w", err)
+		return nil, fmt.Errorf("apply migrations: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+func migrate(db *sql.DB) error {
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read user_version: %w", err)
+	}
+	if version > currentSchemaVersion {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, currentSchemaVersion)
+	}
+	if version == 0 {
+		// Ensure base v0 tables exist (no-op on existing v0 DBs).
+		if _, err := db.Exec(schemaSQL); err != nil {
+			return fmt.Errorf("apply base schema: %w", err)
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+
+		hasCol, err := tableHasColumn(tx, "devices", "can_add_devices")
+		if err != nil {
+			return err
+		}
+		if !hasCol {
+			if _, err := tx.Exec(`ALTER TABLE devices ADD COLUMN can_add_devices INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return fmt.Errorf("add devices.can_add_devices: %w", err)
+			}
+		}
+		if _, err := tx.Exec(migration001SQL); err != nil {
+			return fmt.Errorf("apply migration 1: %w", err)
+		}
+		if _, err := tx.Exec(`PRAGMA user_version = 1`); err != nil {
+			return fmt.Errorf("set user_version=1: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func tableHasColumn(tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (s *Store) Close() error {
@@ -82,9 +187,9 @@ func (s *Store) Close() error {
 
 func (s *Store) CreateDevice(ctx context.Context, d Device) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO devices (id, name, platform, token_hash, last_seq, created_at, last_seen, revoked_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		d.ID, d.Name, d.Platform, d.TokenHash, d.LastSeq, d.CreatedAt, d.LastSeen, d.RevokedAt,
+		`INSERT INTO devices (id, name, platform, token_hash, can_add_devices, last_seq, created_at, last_seen, revoked_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.ID, d.Name, d.Platform, d.TokenHash, boolToInt(d.CanAddDevices), d.LastSeq, d.CreatedAt, d.LastSeen, d.RevokedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert device: %w", err)
@@ -94,13 +199,15 @@ func (s *Store) CreateDevice(ctx context.Context, d Device) error {
 
 func scanDevice(row interface{ Scan(...any) error }) (*Device, error) {
 	var d Device
+	var canAdd int
 	var lastSeen, revokedAt sql.NullInt64
-	if err := row.Scan(&d.ID, &d.Name, &d.Platform, &d.TokenHash, &d.LastSeq, &d.CreatedAt, &lastSeen, &revokedAt); err != nil {
+	if err := row.Scan(&d.ID, &d.Name, &d.Platform, &d.TokenHash, &canAdd, &d.LastSeq, &d.CreatedAt, &lastSeen, &revokedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	d.CanAddDevices = canAdd != 0
 	if lastSeen.Valid {
 		v := lastSeen.Int64
 		d.LastSeen = &v
@@ -114,7 +221,7 @@ func scanDevice(row interface{ Scan(...any) error }) (*Device, error) {
 
 func (s *Store) GetDeviceByTokenHash(ctx context.Context, tokenHash string) (*Device, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, platform, token_hash, last_seq, created_at, last_seen, revoked_at
+		`SELECT id, name, platform, token_hash, can_add_devices, last_seq, created_at, last_seen, revoked_at
 		 FROM devices WHERE token_hash = ?`,
 		tokenHash,
 	)
@@ -123,7 +230,7 @@ func (s *Store) GetDeviceByTokenHash(ctx context.Context, tokenHash string) (*De
 
 func (s *Store) GetDeviceByID(ctx context.Context, id string) (*Device, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, platform, token_hash, last_seq, created_at, last_seen, revoked_at
+		`SELECT id, name, platform, token_hash, can_add_devices, last_seq, created_at, last_seen, revoked_at
 		 FROM devices WHERE id = ?`,
 		id,
 	)
@@ -132,7 +239,7 @@ func (s *Store) GetDeviceByID(ctx context.Context, id string) (*Device, error) {
 
 func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, platform, token_hash, last_seq, created_at, last_seen, revoked_at
+		`SELECT id, name, platform, token_hash, can_add_devices, last_seq, created_at, last_seen, revoked_at
 		 FROM devices ORDER BY created_at ASC, id ASC`,
 	)
 	if err != nil {
@@ -149,6 +256,42 @@ func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
 		devices = append(devices, *d)
 	}
 	return devices, rows.Err()
+}
+
+func (s *Store) UpdateDevice(ctx context.Context, id string, name *string, canAddDevices *bool) (*Device, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	dev, err := scanDevice(tx.QueryRowContext(ctx,
+		`SELECT id, name, platform, token_hash, can_add_devices, last_seq, created_at, last_seen, revoked_at
+		 FROM devices WHERE id = ?`,
+		id,
+	))
+	if err != nil {
+		return nil, err
+	}
+	if dev.RevokedAt != nil {
+		return nil, ErrDeviceRevoked
+	}
+	if name != nil {
+		dev.Name = *name
+	}
+	if canAddDevices != nil {
+		dev.CanAddDevices = *canAddDevices
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE devices SET name = ?, can_add_devices = ? WHERE id = ?`,
+		dev.Name, boolToInt(dev.CanAddDevices), id,
+	); err != nil {
+		return nil, fmt.Errorf("update device: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return dev, nil
 }
 
 // ListRevokedOrMissing returns any IDs from the provided slice that are revoked or no longer exist.

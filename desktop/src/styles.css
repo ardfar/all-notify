@@ -585,3 +585,62 @@ html, body {
   cursor: pointer;
   line-height: 1;
 }
+
+.mt-8 {
+  margin-top: 8px;
+}
+
+.text-input {
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  margin-bottom: 8px;
+}
+
+.confirm-banner {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.confirm-actions > button {
+  flex: 1;
+}
+
+.qr-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.qr-preview-wrap {
+  background: #ffffff;
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  justify-content: center;
+  margin: 10px 0;
+}
+
+.qr-preview-img {
+  width: 196px;
+  height: 196px;
+  display: block;
+}

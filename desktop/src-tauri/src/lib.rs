@@ -1,5 +1,6 @@
 pub mod crypto;
 pub mod notifier;
+pub mod pairing;
 pub mod protocol;
 pub mod storage;
 pub mod sync;
@@ -18,10 +19,14 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tokio::sync::mpsc;
 
 use crate::crypto::{
-    decode_qr_from_image_bytes, parse_pairing_uri, CredentialManager, KeyringSecretStore,
-    PairingConfig,
+    build_pairing_uri_v2, compute_kcv, decode_qr_from_image_bytes, parse_pairing_link,
+    render_qr_svg, CredentialManager, KeyringSecretStore, PairingConfig, PairingLink,
 };
 use crate::notifier::{create_platform_notifier, DismissAction, PlatformNotifier};
+use crate::pairing::{
+    build_http_client, claim_pairing_code, create_pairing_code, current_desktop_platform,
+    fetch_device_me, list_pairing_codes, PairingCodeSummary,
+};
 use crate::protocol::{is_valid_sha256_hex, mime_for_extension};
 use crate::storage::{
     now_unix_ms, prune_stale_dir_files, BlobCache, Database, NotificationRecord, RetentionSettings,
@@ -44,6 +49,7 @@ struct AppState {
     sync_handle: Mutex<Option<SyncHandle>>,
     sync_generation: AtomicU64,
     file_dialog_open: AtomicBool,
+    qr_content_protected: AtomicBool,
     last_blur_hide: Mutex<Option<Instant>>,
 }
 
@@ -53,12 +59,23 @@ struct PublicAppState {
     server_url: Option<String>,
     device_id: Option<String>,
     device_name: Option<String>,
+    can_add_devices: bool,
     status: ConnectionStatus,
     muted: bool,
     privacy_mode: bool,
     autostart: bool,
     unread_count: usize,
     retention: RetentionSettings,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AddDeviceQrResult {
+    code_id: String,
+    name: String,
+    platform: String,
+    expires_at: i64,
+    pairing_uri: String,
+    qr_svg: String,
 }
 
 struct TauriSyncObserver {
@@ -74,6 +91,14 @@ impl SyncObserver for TauriSyncObserver {
             }
             *state.status.lock().expect("status mutex") = status;
             refresh_tray_and_emit(&self.app, &state);
+            if status == ConnectionStatus::Connected {
+                let app = self.app.clone();
+                let state_arc = Arc::clone(&state);
+                let generation = self.generation;
+                tauri::async_runtime::spawn(async move {
+                    refresh_device_me(&app, &state_arc, generation).await;
+                });
+            }
         }
     }
 
@@ -94,6 +119,41 @@ fn refresh_tray_and_emit(app: &AppHandle, state: &AppState) {
     let muted = state.db.is_muted().unwrap_or(false);
     tray::update_tray(app, status, unread, muted);
     let _ = app.emit("sync:status", status);
+}
+
+async fn refresh_device_me(app: &AppHandle, state: &Arc<AppState>, generation: u64) {
+    let Some(cfg) = state.pairing.lock().expect("pairing mutex").clone() else {
+        return;
+    };
+    let Ok(client) = build_http_client() else {
+        return;
+    };
+    let Ok(me) = fetch_device_me(&client, &cfg.server_url, &cfg.token).await else {
+        return;
+    };
+    if state.sync_generation.load(Ordering::SeqCst) != generation {
+        return;
+    }
+    let updated = {
+        let mut guard = state.pairing.lock().expect("pairing mutex");
+        if let Some(cur) = guard.as_mut() {
+            if cur.device_id == me.device_id
+                && (cur.can_add_devices != me.can_add_devices || cur.device_name != me.name)
+            {
+                cur.can_add_devices = me.can_add_devices;
+                cur.device_name = me.name;
+                Some(cur.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    if let Some(new_cfg) = updated {
+        let _ = state.credentials.save(&new_cfg);
+        let _ = app.emit("state:updated", ());
+    }
 }
 
 fn start_sync(app: &AppHandle, state: &Arc<AppState>, cfg: PairingConfig) {
@@ -175,6 +235,36 @@ fn dismiss_all_internal(app: &AppHandle, state: &AppState) -> Result<(), String>
     Ok(())
 }
 
+pub(crate) fn sync_content_protection_before_show(
+    app: &AppHandle,
+    window: &tauri::WebviewWindow,
+) {
+    if let Some(state) = app.try_state::<Arc<AppState>>() {
+        let desired = state.qr_content_protected.load(Ordering::SeqCst);
+        let _ = window.set_content_protected(desired);
+    }
+}
+
+fn revoke_local_trust(app: &AppHandle, state: &AppState) {
+    let updated = {
+        let mut guard = state.pairing.lock().expect("pairing mutex");
+        if let Some(cur) = guard.as_mut() {
+            if cur.can_add_devices {
+                cur.can_add_devices = false;
+                Some(cur.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    if let Some(new_cfg) = updated {
+        let _ = state.credentials.save(&new_cfg);
+        let _ = app.emit("state:updated", ());
+    }
+}
+
 pub(crate) fn was_recently_hidden_by_blur(app: &AppHandle) -> bool {
     let Some(state) = app.try_state::<Arc<AppState>>() else {
         return false;
@@ -221,6 +311,7 @@ fn get_app_state(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<Publ
         server_url: pairing.as_ref().map(|p| p.server_url.clone()),
         device_id: pairing.as_ref().map(|p| p.device_id.clone()),
         device_name: pairing.as_ref().map(|p| p.device_name.clone()),
+        can_add_devices: pairing.as_ref().is_some_and(|p| p.can_add_devices),
         status,
         muted,
         privacy_mode,
@@ -231,13 +322,58 @@ fn get_app_state(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<Publ
 }
 
 #[tauri::command]
-fn pair_with_uri(
+async fn pair_with_uri(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     uri: String,
+    force_replace: Option<bool>,
 ) -> Result<PublicAppState, String> {
-    let cfg = parse_pairing_uri(&uri).map_err(|e| e.to_string())?;
+    let link = parse_pairing_link(&uri).map_err(|e| e.to_string())?;
+
+    // Confirm before replacing an existing pairing with a different server URL or K_master KCV.
+    let existing = state.pairing.lock().expect("pairing mutex").clone();
+    if let Some(cur) = existing {
+        let same_url = cur.server_url == link.server_url();
+        let same_kcv = compute_kcv(&cur.key_bytes).ok() == compute_kcv(link.key_bytes()).ok();
+        if (!same_url || !same_kcv) && !force_replace.unwrap_or(false) {
+            return Err("CONFIRM_REPLACE".to_string());
+        }
+    }
+
+    let cfg = match link {
+        PairingLink::V1(cfg) => cfg,
+        PairingLink::V2 {
+            server_url,
+            ws_url,
+            code,
+            key_base64url,
+            key_bytes,
+            ..
+        } => {
+            let client = build_http_client().map_err(|e| e.to_string())?;
+            let claimed =
+                claim_pairing_code(&client, &server_url, &code, current_desktop_platform())
+                    .await
+                    .map_err(|e| e.to_string())?;
+            PairingConfig {
+                version: 1,
+                server_url,
+                ws_url,
+                token: claimed.token,
+                key_base64url,
+                key_bytes,
+                device_id: claimed.device_id,
+                device_name: claimed.name,
+                can_add_devices: claimed.can_add_devices,
+            }
+        }
+    };
+
     stop_sync(&state);
+    state.qr_content_protected.store(false, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_content_protected(false);
+    }
     state.credentials.save(&cfg).map_err(|e| e.to_string())?;
     let _ = state.db.reset_last_acked_seq();
     let _ = state.db.clear_outbox();
@@ -249,6 +385,100 @@ fn pair_with_uri(
 }
 
 #[tauri::command]
+async fn create_add_device_qr(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    platform: String,
+) -> Result<AddDeviceQrResult, String> {
+    let cfg = state
+        .pairing
+        .lock()
+        .expect("pairing mutex")
+        .clone()
+        .ok_or_else(|| "Not paired".to_string())?;
+    if !cfg.can_add_devices {
+        return Err("This device is not trusted to add devices.".to_string());
+    }
+    let clean_name = name.trim().to_string();
+    if clean_name.is_empty() || clean_name.chars().count() > 128 {
+        return Err("Enter a device name (1-128 characters).".to_string());
+    }
+    let client = build_http_client().map_err(|e| e.to_string())?;
+    let created = create_pairing_code(
+        &client,
+        &cfg.server_url,
+        &cfg.token,
+        &clean_name,
+        platform.trim(),
+    )
+    .await
+    .map_err(|e| {
+        if e.status == 403 {
+            revoke_local_trust(&app, &state);
+        }
+        e.to_string()
+    })?;
+
+    let pairing_uri = build_pairing_uri_v2(
+        &cfg.server_url,
+        &created.code,
+        &cfg.key_base64url,
+        &created.name,
+    );
+    let qr_svg = render_qr_svg(&pairing_uri).map_err(|e| e.to_string())?;
+
+    Ok(AddDeviceQrResult {
+        code_id: created.code_id,
+        name: created.name,
+        platform: created.platform,
+        expires_at: created.expires_at,
+        pairing_uri,
+        qr_svg,
+    })
+}
+
+#[tauri::command]
+async fn list_my_pairing_codes(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<PairingCodeSummary>, String> {
+    let cfg = state
+        .pairing
+        .lock()
+        .expect("pairing mutex")
+        .clone()
+        .ok_or_else(|| "Not paired".to_string())?;
+    if !cfg.can_add_devices {
+        return Err("This device is not trusted to add devices.".to_string());
+    }
+    let client = build_http_client().map_err(|e| e.to_string())?;
+    list_pairing_codes(&client, &cfg.server_url, &cfg.token)
+        .await
+        .map_err(|e| {
+            if e.status == 403 {
+                revoke_local_trust(&app, &state);
+            }
+            e.to_string()
+        })
+}
+
+#[tauri::command]
+fn set_content_protected(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    protected: bool,
+) -> Result<(), String> {
+    state.qr_content_protected.store(protected, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("main") {
+        window
+            .set_content_protected(protected)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn decode_qr_image(bytes: Vec<u8>) -> Result<String, String> {
     decode_qr_from_image_bytes(&bytes).map_err(|e| e.to_string())
 }
@@ -256,6 +486,10 @@ fn decode_qr_image(bytes: Vec<u8>) -> Result<String, String> {
 #[tauri::command]
 fn unpair(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<PublicAppState, String> {
     stop_sync(&state);
+    state.qr_content_protected.store(false, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_content_protected(false);
+    }
     state.credentials.clear().map_err(|e| e.to_string())?;
     state.notifier.clear_all();
     let _ = state.db.clear_history();
@@ -468,6 +702,7 @@ pub fn run() {
                 sync_handle: Mutex::new(None),
                 sync_generation: AtomicU64::new(0),
                 file_dialog_open: AtomicBool::new(false),
+                qr_content_protected: AtomicBool::new(false),
                 last_blur_hide: Mutex::new(None),
             });
             app.manage(Arc::clone(&app_state));
@@ -483,6 +718,7 @@ pub fn run() {
                 window.on_window_event(move |event| match event {
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
+                        let _ = win_clone.set_content_protected(false);
                         let _ = win_clone.hide();
                     }
                     WindowEvent::Focused(true) => {
@@ -495,6 +731,7 @@ pub fn run() {
                             .last_blur_hide
                             .lock()
                             .expect("last_blur_hide mutex") = Some(Instant::now());
+                        let _ = win_clone.set_content_protected(false);
                         let _ = win_clone.hide();
                     }
                     _ => {}
@@ -533,6 +770,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_app_state,
             pair_with_uri,
+            create_add_device_qr,
+            list_my_pairing_codes,
+            set_content_protected,
             decode_qr_image,
             unpair,
             list_notifications,

@@ -30,12 +30,16 @@
       </div>
     </header>
 
-    <!-- First-run Pairing View -->
+    <!-- First-run / Re-pair View -->
     <main id="view-pairing" class="view pairing-view hidden">
+      <div id="pair-back-row" class="settings-header hidden">
+        <button id="btn-pair-cancel" class="text-btn">← Back</button>
+        <h2>Re-pair Device</h2>
+      </div>
       <div class="pairing-hero">
         <div class="hero-badge">E2EE</div>
         <h1>Pair This Computer</h1>
-        <p class="muted-text">Paste your <code>allnotify://pair</code> URI from your relay server or drop a pairing QR code image.</p>
+        <p class="muted-text">Paste your <code>allnotify://pair</code> link (v1 or v2) from the web admin page or a trusted device, or drop a QR image.</p>
       </div>
 
       <div id="qr-dropzone" class="dropzone" tabindex="0" role="button" aria-label="Drop or select a pairing QR image">
@@ -45,8 +49,15 @@
       <input id="qr-file-input" type="file" accept="image/png,image/jpeg,image/webp" class="sr-only" />
 
       <label class="field-label" for="pair-uri-input">Pairing URI</label>
-      <textarea id="pair-uri-input" class="uri-input" rows="3" placeholder="allnotify://pair?v=1&url=https%3A%2F%2F..." spellcheck="false"></textarea>
+      <textarea id="pair-uri-input" class="uri-input" rows="3" placeholder="allnotify://pair?v=2&url=https%3A%2F%2F..." spellcheck="false"></textarea>
       <div id="pair-error" class="error-banner hidden" role="alert"></div>
+      <div id="pair-confirm-replace" class="confirm-banner hidden" role="alert">
+        <div>This link uses a different server or encryption key. Replace current pairing?</div>
+        <div class="confirm-actions">
+          <button id="btn-confirm-replace" class="danger-btn">Replace</button>
+          <button id="btn-cancel-replace" class="secondary-btn">Cancel</button>
+        </div>
+      </div>
       <button id="btn-pair-submit" class="primary-btn">Connect</button>
     </main>
 
@@ -113,9 +124,55 @@
         <div id="settings-feedback" class="feedback-text hidden"></div>
       </section>
 
+      <section id="card-add-device" class="settings-card hidden">
+        <div class="toggle-title">Add another device</div>
+        <div class="toggle-sub">Create a one-time pairing QR code directly from this trusted computer.</div>
+        <button id="btn-open-add-device" class="primary-btn full-width mt-8">Add device</button>
+      </section>
+
       <section class="settings-card danger-zone">
+        <button id="btn-open-repair" class="secondary-btn full-width">Re-pair with new URI / QR</button>
         <button id="btn-clear-history" class="secondary-btn full-width">Clear local history now</button>
         <button id="btn-unpair" class="danger-btn full-width">Unpair / Reset this device</button>
+      </section>
+    </main>
+
+    <!-- Add Device View (trusted devices only) -->
+    <main id="view-add-device" class="view settings-view hidden">
+      <div class="settings-header">
+        <button id="btn-back-settings" class="text-btn">← Settings</button>
+        <h2>Add Device</h2>
+      </div>
+
+      <section id="add-device-form-card" class="settings-card">
+        <p class="muted-text">One-time code expires in 10 minutes. Your master key stays local.</p>
+        <label class="field-label" for="add-dev-name">Device name</label>
+        <input id="add-dev-name" type="text" class="text-input" maxlength="128" placeholder="e.g. Pixel 9 or Work PC" autocomplete="off" />
+        <label class="field-label" for="add-dev-platform">Platform</label>
+        <select id="add-dev-platform" class="text-input">
+          <option value="android">Android</option>
+          <option value="macos">macOS</option>
+          <option value="windows">Windows</option>
+        </select>
+        <div id="add-dev-error" class="error-banner hidden" role="alert"></div>
+        <button id="btn-generate-qr" class="primary-btn full-width">Generate Pairing QR</button>
+      </section>
+
+      <section id="add-device-qr-card" class="settings-card hidden">
+        <div class="qr-meta-row">
+          <strong id="add-qr-title"></strong>
+          <span id="add-qr-status" class="device-pill">Pending</span>
+        </div>
+        <div id="add-qr-countdown" class="toggle-sub"></div>
+        <div class="qr-preview-wrap">
+          <img id="add-qr-img" class="qr-preview-img" alt="One-time pairing QR code" />
+        </div>
+        <textarea id="add-qr-uri" class="uri-input" rows="2" readonly spellcheck="false"></textarea>
+        <div class="confirm-actions">
+          <button id="btn-copy-add-uri" class="primary-btn">Copy link</button>
+          <button id="btn-add-another" class="secondary-btn">New code</button>
+        </div>
+        <div id="add-qr-feedback" class="feedback-text hidden"></div>
       </section>
     </main>
 

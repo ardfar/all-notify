@@ -149,6 +149,7 @@ pub fn toggle_popover(app: &AppHandle, tray_rect: Option<Rect>, force_show: bool
     if let Some(rect) = tray_rect {
         position_window_near_tray(&window, rect);
     }
+    crate::sync_content_protection_before_show(app, &window);
     let _ = window.show();
     let _ = window.set_focus();
 }

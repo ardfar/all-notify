@@ -3,12 +3,15 @@ package com.allnotify.app
 import android.app.Application
 import com.allnotify.app.crypto.CryptoEngine
 import com.allnotify.app.crypto.PairingConfig
+import com.allnotify.app.crypto.PairingLink
 import com.allnotify.app.crypto.Ulid
 import com.allnotify.app.data.AllNotifyDatabase
 import com.allnotify.app.data.BlobCacheManager
 import com.allnotify.app.data.RetentionWorker
 import com.allnotify.app.data.SecureCredentialStore
 import com.allnotify.app.net.BlobApiClient
+import com.allnotify.app.net.ConnectionState
+import com.allnotify.app.net.PairingApiClient
 import com.allnotify.app.net.RelayWsClient
 import com.allnotify.app.protocol.NotificationDismissedPayload
 import com.allnotify.app.protocol.encodeDismissedPayload
@@ -42,6 +45,8 @@ class AllNotifyApp : Application() {
         private set
     lateinit var blobApiClient: BlobApiClient
         private set
+    lateinit var pairingApiClient: PairingApiClient
+        private set
     lateinit var mirroredPoster: MirroredNotificationPoster
         private set
     lateinit var remoteCancelGuard: RemoteCancelGuard
@@ -71,6 +76,7 @@ class AllNotifyApp : Application() {
             .writeTimeout(30, TimeUnit.SECONDS)
             .build()
         blobApiClient = BlobApiClient(blobHttp)
+        pairingApiClient = PairingApiClient(blobHttp)
 
         val wsHttp = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -127,6 +133,52 @@ class AllNotifyApp : Application() {
         appScope.launch {
             database.pruneRetention(blobCache)
         }
+        // Refresh GET /v1/me on every WS connect to keep can_add_devices up to date.
+        appScope.launch {
+            relayClient.state.collect { st ->
+                if (st == ConnectionState.CONNECTED) {
+                    refreshDeviceMe()
+                }
+            }
+        }
+    }
+
+    suspend fun refreshDeviceMe() {
+        val cfg = currentConfig() ?: return
+        runCatching {
+            val me = pairingApiClient.fetchMe(cfg.serverUrl, cfg.token)
+            database.setCanAddDevices(me.canAddDevices)
+        }
+    }
+
+    suspend fun pairFromLink(link: PairingLink): Result<PairingConfig> = runCatching {
+        when (link) {
+            is PairingLink.V1 -> {
+                database.setCanAddDevices(false)
+                applyPairing(link.config)
+                link.config
+            }
+            is PairingLink.V2 -> {
+                val claimed = pairingApiClient.claimCode(
+                    serverUrl = link.serverUrl,
+                    code = link.code,
+                    platform = "android"
+                )
+                val cfg = PairingConfig(
+                    version = 1,
+                    serverUrl = link.serverUrl,
+                    wsUrl = link.wsUrl,
+                    token = claimed.token,
+                    keyBase64Url = link.keyBase64Url,
+                    keyBytes = link.keyBytes,
+                    deviceId = claimed.deviceId,
+                    deviceName = claimed.name
+                )
+                database.setCanAddDevices(claimed.canAddDevices)
+                applyPairing(cfg)
+                cfg
+            }
+        }
     }
 
     fun currentConfig(): PairingConfig? = _pairingConfig.value
@@ -172,6 +224,7 @@ class AllNotifyApp : Application() {
         cryptoEngine = null
         appScope.launch {
             database.resetSyncState()
+            database.setCanAddDevices(false)
             blobCache.clearUploadedIconCache()
         }
     }
