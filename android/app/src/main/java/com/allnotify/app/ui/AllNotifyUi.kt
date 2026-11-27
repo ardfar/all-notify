@@ -91,6 +91,7 @@ import com.allnotify.app.data.KvKeys
 import com.allnotify.app.data.NotificationEntity
 import com.allnotify.app.net.ConnectionState
 import com.allnotify.app.receiver.Deduplicator
+import com.allnotify.app.service.AllNotifyListenerService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -918,6 +919,7 @@ private fun PermissionChecklistCard(
     onRefresh: () -> Unit
 ) {
     val context = LocalContext.current
+    val listenerBound by AllNotifyListenerService.connectedState.collectAsState()
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
@@ -928,11 +930,24 @@ private fun PermissionChecklistCard(
                 Text("Permissions & Battery", style = MaterialTheme.typography.titleMedium)
                 TextButton(onClick = onRefresh) { Text("Refresh") }
             }
-            PermissionRow(
-                title = "Notification Access",
-                granted = status.notificationAccessGranted,
-                onAction = { PermissionHelpers.openNotificationAccessSettings(context) }
-            )
+            if (status.notificationAccessGranted && !listenerBound) {
+                PermissionRow(
+                    title = "Notification Listener (Unbound)",
+                    granted = false,
+                    actionLabel = "Rebind",
+                    onAction = {
+                        AllNotifyListenerService.requestRebindIfNeeded(context, force = true)
+                        Toast.makeText(context, "Requested notification listener rebind", Toast.LENGTH_SHORT).show()
+                        onRefresh()
+                    }
+                )
+            } else {
+                PermissionRow(
+                    title = "Notification Access",
+                    granted = status.notificationAccessGranted,
+                    onAction = { PermissionHelpers.openNotificationAccessSettings(context) }
+                )
+            }
             PermissionRow(
                 title = "Post Notifications",
                 granted = status.postNotificationsGranted,
@@ -948,7 +963,12 @@ private fun PermissionChecklistCard(
 }
 
 @Composable
-private fun PermissionRow(title: String, granted: Boolean, onAction: () -> Unit) {
+private fun PermissionRow(
+    title: String,
+    granted: Boolean,
+    actionLabel: String = "Grant",
+    onAction: () -> Unit
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -959,7 +979,7 @@ private fun PermissionRow(title: String, granted: Boolean, onAction: () -> Unit)
             Icon(Icons.Default.Check, contentDescription = "Granted", tint = Color(0xFF2E7D32))
         } else {
             OutlinedButton(onClick = onAction) {
-                Text("Grant")
+                Text(actionLabel)
             }
         }
     }

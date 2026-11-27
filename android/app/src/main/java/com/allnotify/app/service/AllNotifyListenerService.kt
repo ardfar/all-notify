@@ -2,6 +2,7 @@ package com.allnotify.app.service
 
 import android.app.Notification
 import android.app.NotificationManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -24,11 +25,15 @@ import com.allnotify.app.protocol.ContentPayload
 import com.allnotify.app.protocol.NotificationPostedPayload
 import com.allnotify.app.protocol.encodePostedPayload
 import com.allnotify.app.receiver.Deduplicator
+import com.allnotify.app.ui.PermissionHelpers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -108,16 +113,21 @@ class AllNotifyListenerService : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         activeInstance.set(this)
+        _connectedState.value = true
         (applicationContext as? AllNotifyApp)?.ensureRelayRunning()
     }
 
     override fun onListenerDisconnected() {
-        activeInstance.compareAndSet(this, null)
+        if (activeInstance.compareAndSet(this, null)) {
+            _connectedState.value = false
+        }
         super.onListenerDisconnected()
     }
 
     override fun onDestroy() {
-        activeInstance.compareAndSet(this, null)
+        if (activeInstance.compareAndSet(this, null)) {
+            _connectedState.value = false
+        }
         scope.cancel()
         super.onDestroy()
     }
@@ -447,9 +457,49 @@ class AllNotifyListenerService : NotificationListenerService() {
         private const val MAX_APP_NAME_CHARS = 256
         private const val MAX_DEVICE_NAME_CHARS = 128
 
+        private const val REBIND_THROTTLE_MS = 15_000L
+
         private val activeInstance = AtomicReference<AllNotifyListenerService?>(null)
+        private val _connectedState = MutableStateFlow(false)
+        val connectedState: StateFlow<Boolean> = _connectedState.asStateFlow()
+        private val lastRebindAttemptMs = AtomicLong(0L)
 
         fun isConnected(): Boolean = activeInstance.get() != null
+
+        /**
+         * Recovers from OEM battery savers or app updates that unbind the NotificationListenerService
+         * while Notification Access remains enabled in Android Settings.
+         */
+        fun requestRebindIfNeeded(
+            context: Context,
+            force: Boolean = false,
+            nowMs: () -> Long = { System.currentTimeMillis() },
+            isEnabled: (Context) -> Boolean = { PermissionHelpers.isNotificationListenerEnabled(it) },
+            triggerRebind: (ComponentName) -> Unit = { requestRebind(it) }
+        ): Boolean {
+            if (isConnected()) return false
+            if (!isEnabled(context)) return false
+            val now = nowMs()
+            val prev = lastRebindAttemptMs.get()
+            if (!force && prev > 0L && (now - prev) < REBIND_THROTTLE_MS) {
+                return false
+            }
+            if (!force && !lastRebindAttemptMs.compareAndSet(prev, now)) {
+                return false
+            }
+            if (force) {
+                lastRebindAttemptMs.set(now)
+            }
+            val component = ComponentName(context.applicationContext, AllNotifyListenerService::class.java)
+            return runCatching {
+                triggerRebind(component)
+                true
+            }.getOrDefault(false)
+        }
+
+        internal fun resetRebindThrottleForTest() {
+            lastRebindAttemptMs.set(0L)
+        }
 
         fun cancelRemote(sbnKey: String, guard: RemoteCancelGuard) {
             val svc = activeInstance.get() ?: return

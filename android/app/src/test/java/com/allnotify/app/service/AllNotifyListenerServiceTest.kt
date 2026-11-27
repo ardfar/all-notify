@@ -309,4 +309,90 @@ class AllNotifyListenerServiceTest {
         val leftoverAttachments = blobCache.attachmentsDir.listFiles()?.filter { it.isFile && !it.name.endsWith(".tmp") }.orEmpty()
         assertTrue("aborted upload must not leave orphan attachment on disk: $leftoverAttachments", leftoverAttachments.isEmpty())
     }
+
+    @Test
+    fun requestRebindIfNeededGuardsPermissionThrottleForceAndConnectedState() {
+        AllNotifyListenerService.resetRebindThrottleForTest()
+        val rebindComponents = mutableListOf<android.content.ComponentName>()
+        var now = 100_000L
+
+        // 1. Permission NOT enabled -> never calls requestRebind
+        assertFalse(
+            AllNotifyListenerService.requestRebindIfNeeded(
+                context = context,
+                nowMs = { now },
+                isEnabled = { false },
+                triggerRebind = { rebindComponents.add(it) }
+            )
+        )
+        assertEquals(0, rebindComponents.size)
+
+        // 2. Permission enabled & disconnected -> calls requestRebind with AllNotifyListenerService
+        assertTrue(
+            AllNotifyListenerService.requestRebindIfNeeded(
+                context = context,
+                nowMs = { now },
+                isEnabled = { true },
+                triggerRebind = { rebindComponents.add(it) }
+            )
+        )
+        assertEquals(1, rebindComponents.size)
+        assertEquals(AllNotifyListenerService::class.java.name, rebindComponents[0].className)
+
+        // 3. Repeat within 15s throttle window -> skipped
+        now += 5_000L
+        assertFalse(
+            AllNotifyListenerService.requestRebindIfNeeded(
+                context = context,
+                nowMs = { now },
+                isEnabled = { true },
+                triggerRebind = { rebindComponents.add(it) }
+            )
+        )
+        assertEquals(1, rebindComponents.size)
+
+        // 4. force = true bypasses throttle
+        assertTrue(
+            AllNotifyListenerService.requestRebindIfNeeded(
+                context = context,
+                force = true,
+                nowMs = { now },
+                isEnabled = { true },
+                triggerRebind = { rebindComponents.add(it) }
+            )
+        )
+        assertEquals(2, rebindComponents.size)
+
+        // 5. After 15s window expires -> allowed again
+        now += 15_000L
+        assertTrue(
+            AllNotifyListenerService.requestRebindIfNeeded(
+                context = context,
+                nowMs = { now },
+                isEnabled = { true },
+                triggerRebind = { rebindComponents.add(it) }
+            )
+        )
+        assertEquals(3, rebindComponents.size)
+
+        // 6. When listener is already connected -> skipped even with force = true
+        service.onListenerConnected()
+        assertTrue(AllNotifyListenerService.isConnected())
+        assertTrue(AllNotifyListenerService.connectedState.value)
+        assertFalse(
+            AllNotifyListenerService.requestRebindIfNeeded(
+                context = context,
+                force = true,
+                nowMs = { now + 60_000L },
+                isEnabled = { true },
+                triggerRebind = { rebindComponents.add(it) }
+            )
+        )
+        assertEquals(3, rebindComponents.size)
+
+        // 7. Disconnecting clears connectedState back to false
+        service.onListenerDisconnected()
+        assertFalse(AllNotifyListenerService.isConnected())
+        assertFalse(AllNotifyListenerService.connectedState.value)
+    }
 }

@@ -133,10 +133,12 @@ class AllNotifyApp : Application() {
         appScope.launch {
             database.pruneRetention(blobCache)
         }
-        // Refresh GET /v1/me on every WS connect to keep can_add_devices up to date.
+        // Refresh GET /v1/me on every WS connect to keep can_add_devices up to date,
+        // and request NotificationListenerService rebind if an OEM battery saver unbound it.
         appScope.launch {
             relayClient.state.collect { st ->
                 if (st == ConnectionState.CONNECTED) {
+                    AllNotifyListenerService.requestRebindIfNeeded(this@AllNotifyApp)
                     refreshDeviceMe()
                 }
             }
@@ -192,6 +194,7 @@ class AllNotifyApp : Application() {
      */
     fun ensureRelayRunning() {
         val cfg = currentConfig() ?: return
+        AllNotifyListenerService.requestRebindIfNeeded(this)
         if (!RelayForegroundService.start(this)) {
             relayClient.start(cfg)
         }

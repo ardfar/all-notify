@@ -69,6 +69,7 @@ class RelayForegroundService : Service() {
                     return START_NOT_STICKY
                 }
                 app.relayClient.start(cfg)
+                AllNotifyListenerService.requestRebindIfNeeded(this)
             }
         }
         return START_STICKY
@@ -118,6 +119,7 @@ class RelayForegroundService : Service() {
                 lastNetwork = network
                 if (prev == null || prev != network) {
                     app.relayClient.triggerImmediateReconnect(forceCloseActive = true)
+                    AllNotifyListenerService.requestRebindIfNeeded(this@RelayForegroundService)
                 }
             }
 

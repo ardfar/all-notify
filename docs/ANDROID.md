@@ -32,6 +32,7 @@ The Android client is a **native Kotlin** app that acts as both a **sender** (ca
 ### A. `AllNotifyListenerService` (`NotificationListenerService`)
 Captures local notifications and executes remote dismissals.
 
+- **OEM rebind recovery**: Whenever the app launches/resumes, `RelayForegroundService` starts, or the WebSocket reconnects, All-Notify checks if Notification Access is granted while `AllNotifyListenerService` is unbound (common after OEM Battery Saver kills or app updates) and automatically calls `NotificationListenerService.requestRebind(...)` (15s throttle, plus manual **Rebind** button in Settings → Permissions).
 - **`onNotificationPosted(sbn: StatusBarNotification)`**:
   1. **Loop guard**: Ignore immediately if `sbn.packageName == BuildConfig.APPLICATION_ID`.
   2. **Default noise filter**:
