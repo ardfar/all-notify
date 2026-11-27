@@ -23,11 +23,12 @@
 
 ```text
 all-notify/
-├── docs/           # Design & development documentation (this folder)
-├── protocol/       # JSON event schemas, E2EE spec, cross-language test vectors
-├── server/         # Go VPS relay server (WebSocket + SQLite queue + E2EE blob store)
-├── android/        # Native Kotlin Android app (NotificationListener + Foreground Service)
-└── desktop/        # Tauri (Rust + minimal Svelte/vanilla UI) tray app for Windows & macOS
+├── docs/               # Design & development documentation (this folder)
+├── protocol/           # JSON event schemas, E2EE spec, cross-language test vectors
+├── server/             # Go VPS relay server (WebSocket + SQLite queue + E2EE blob store + /admin UI)
+├── android/            # Native Kotlin Android app (NotificationListener + Foreground Service)
+├── desktop/            # Tauri v2 (Rust + minimal vanilla JS/CSS) tray app for Windows & macOS
+└── tests/live_e2e/     # Live hardware-in-the-loop E2E suite (Android + macOS + /admin)
 ```
 
 ## Documentation Index

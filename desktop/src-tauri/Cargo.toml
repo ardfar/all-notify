@@ -1,6 +1,6 @@
 [package]
 name = "all-notify-desktop"
-version = "0.1.0"
+version = "1.0.0"
 description = "All-Notify E2EE desktop notification hub (macOS & Windows)"
 authors = ["All-Notify"]
 edition = "2021"

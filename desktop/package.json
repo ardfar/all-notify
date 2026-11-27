@@ -1,7 +1,7 @@
 {
   "name": "all-notify-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "All-Notify lightweight E2EE desktop tray notification hub",
   "scripts": {
     "tauri": "tauri",
