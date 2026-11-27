@@ -13,3 +13,8 @@
 
 # Release outputs
 /dist/
+
+# Live E2E test reports & Python cache
+/tests/live_e2e/reports/
+__pycache__/
+*.py[cod]
