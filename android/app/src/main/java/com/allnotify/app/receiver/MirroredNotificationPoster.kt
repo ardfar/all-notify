@@ -71,6 +71,7 @@ class MirroredNotificationPoster(private val context: Context) : MirroredDisplay
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val silent = silentUpdate || isOsDndBlocking()
         val subText = if (senders.isNotEmpty()) "${entity.appName} • $senders" else entity.appName
         val builder = NotificationCompat.Builder(context, CHANNEL_MIRRORED)
             .setSmallIcon(R.drawable.ic_notification)
@@ -80,8 +81,8 @@ class MirroredNotificationPoster(private val context: Context) : MirroredDisplay
             .setWhen(entity.postedAt)
             .setShowWhen(true)
             .setAutoCancel(true)
-            .setOnlyAlertOnce(silentUpdate)
-            .setSilent(silentUpdate)
+            .setOnlyAlertOnce(silent)
+            .setSilent(silent)
             .setContentIntent(contentIntent)
             .setDeleteIntent(deleteIntent)
 
@@ -131,12 +132,15 @@ class MirroredNotificationPoster(private val context: Context) : MirroredDisplay
             inbox.setSummaryText("+${activeEntities.size - 5} more in All-Notify")
         }
 
+        val silent = isOsDndBlocking()
         val notif = NotificationCompat.Builder(context, CHANNEL_MIRRORED)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("${activeEntities.size} mirrored notifications")
             .setContentText("Tap to view in All-Notify")
             .setStyle(inbox)
             .setAutoCancel(true)
+            .setOnlyAlertOnce(silent)
+            .setSilent(silent)
             .setContentIntent(contentIntent)
             .build()
 

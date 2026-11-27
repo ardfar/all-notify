@@ -74,9 +74,9 @@ def run(ctx: TestContext) -> None:
             f"POST_NOTIFICATIONS permission not granted on {label} ({serial})"
         )
         dnd_on = h.get("zen_mode", 0) != 0
-        status = "PASS" if (h["battery_unrestricted"] and not dnd_on) else "WARN"
+        status = "PASS" if h["battery_unrestricted"] else "WARN"
         batt_note = "battery unrestricted" if h["battery_unrestricted"] else "battery optimization NOT whitelisted"
-        dnd_note = "; DND ON (mirrored popups suppressed by design)" if dnd_on else ""
+        dnd_note = "; DND ON (silent shade delivery)" if dnd_on else ""
         return (
             status,
             f"{serial}: listener={'bound' if h['listener_bound'] else 'enabled'}, FGS running, {batt_note}{dnd_note}",

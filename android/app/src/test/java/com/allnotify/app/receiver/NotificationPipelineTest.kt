@@ -294,24 +294,34 @@ class NotificationPipelineTest {
     }
 
     @Test
-    fun pauseAndOsDndSuppressPopupsWhileStillSavingHistoryAndAcking() = runBlocking {
+    fun pauseSuppressesPopupsWhileOsDndPostsSilently() = runBlocking {
         pipeline.onReplayStart()
         pipeline.onReplayComplete(ReplayCompleteFrame(latestSeq = 0))
 
-        // Pause mode
+        // Pause mode suppresses popups completely while saving history and acking
         db.setPaused(true)
         pipeline.onEvent(makePostedEvent(1, "e1", "dev_A", "Phone A", "uid_1", clockMs))
         assertEquals(0, shownCalls.size)
         assertEquals(1, db.notificationDao().count())
         assertEquals(listOf(1L), sentAcks)
 
-        // Unpause, enable OS DND
+        // Unpause with OS DND enabled: still posts to Android shade, but marked silent
         db.setPaused(false)
         dndBlocking = true
         pipeline.onEvent(makePostedEvent(2, "e2", "dev_A", "Phone A", "uid_2", clockMs + 10_000L, title = "DND"))
-        assertEquals(0, shownCalls.size)
+        assertEquals(1, shownCalls.size)
+        assertEquals("DND", shownCalls[0].first.title)
+        assertTrue("DND live notification must be posted silently", shownCalls[0].second)
         assertEquals(2, db.notificationDao().count())
         assertEquals(listOf(1L, 2L), sentAcks)
+
+        // Replay under OS DND also posts still-active items silently
+        pipeline.onReplayStart()
+        pipeline.onEvent(makePostedEvent(3, "e3", "dev_A", "Phone A", "uid_3", clockMs + 20_000L, title = "DND Replay"))
+        pipeline.onReplayComplete(ReplayCompleteFrame(latestSeq = 3))
+        assertEquals(2, shownCalls.size)
+        assertEquals("DND Replay", shownCalls[1].first.title)
+        assertTrue("DND replayed notification must be posted silently", shownCalls[1].second)
     }
 
     @Test

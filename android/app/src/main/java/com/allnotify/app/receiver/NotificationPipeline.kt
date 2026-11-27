@@ -99,17 +99,18 @@ class NotificationPipeline(
         val pendingIds = replayActiveRowIds.toList()
         replayActiveRowIds.clear()
 
-        if (pendingIds.isNotEmpty() && !database.isPaused(nowMs()) && !displayPort.isOsDndBlocking()) {
+        if (pendingIds.isNotEmpty() && !database.isPaused(nowMs())) {
             val stillActive = pendingIds.mapNotNull { id ->
                 database.notificationDao().getById(id)?.takeIf { it.dismissedAt == null }
             }
             if (stillActive.size > SUMMARY_THRESHOLD) {
                 displayPort.showReplaySummary(stillActive)
             } else {
+                val silent = displayPort.isOsDndBlocking()
                 for (entity in stillActive) {
                     val iconFile = entity.iconSha256?.let { blobCache.getIconFile(it) }
                     val attachmentFile = entity.attachmentPath?.let { File(it).takeIf(File::exists) }
-                    displayPort.showNotification(entity, iconFile, attachmentFile, silentUpdate = false)
+                    displayPort.showNotification(entity, iconFile, attachmentFile, silentUpdate = silent)
                 }
             }
         }
@@ -180,7 +181,7 @@ class NotificationPipeline(
 
             // Only update the mirrored OS notification if this row is actually mirrored.
             // If isMirrored == false, this phone already has the native app notification locally.
-            if (updated.isMirrored && !replaying && !database.isPaused(nowMs()) && !displayPort.isOsDndBlocking()) {
+            if (updated.isMirrored && !replaying && !database.isPaused(nowMs())) {
                 val resolvedIcon = iconFile ?: updated.iconSha256?.let { blobCache.getIconFile(it) }
                 val resolvedAttachment = attachmentFile ?: updated.attachmentPath?.let { File(it).takeIf(File::exists) }
                 displayPort.showNotification(updated, resolvedIcon, resolvedAttachment, silentUpdate = true)
@@ -208,8 +209,13 @@ class NotificationPipeline(
 
         if (replaying) {
             replayActiveRowIds.add(rowId)
-        } else if (!database.isPaused(nowMs()) && !displayPort.isOsDndBlocking()) {
-            displayPort.showNotification(saved, iconFile, attachmentFile, silentUpdate = false)
+        } else if (!database.isPaused(nowMs())) {
+            displayPort.showNotification(
+                saved,
+                iconFile,
+                attachmentFile,
+                silentUpdate = displayPort.isOsDndBlocking()
+            )
         }
     }
 

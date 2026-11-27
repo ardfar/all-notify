@@ -68,6 +68,17 @@ class MirroredNotificationPosterTest {
         poster.cancelMirrored(42L)
         assertEquals(0, shadowNm.allNotifications.size)
 
+        // Under OS DND, notification still posts into shade with silent flag
+        nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_PRIORITY)
+        poster.showNotification(entity, iconFile = null, attachmentFile = null, silentUpdate = false)
+        assertEquals(1, shadowNm.allNotifications.size)
+        assertTrue(
+            "DND notification must set FLAG_ONLY_ALERT_ONCE",
+            (shadowNm.allNotifications[0].flags and Notification.FLAG_ONLY_ALERT_ONCE) != 0
+        )
+        poster.cancelMirrored(42L)
+        nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
+
         // Summary collapse
         val batch = (1..7).map { i -> entity.copy(id = i.toLong(), title = "Msg $i") }
         poster.showReplaySummary(batch)

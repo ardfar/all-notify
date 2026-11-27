@@ -64,7 +64,7 @@ Captures local notifications and executes remote dismissals.
 - Handles `replay_complete` boundary: buffers replayed events before popping up only still-active notifications.
 
 ### C. Receiver & Mirrored Notification Display
-- **Mute / Pause toggle** + **OS DND respect** (`NotificationManager.currentInterruptionFilter`).
+- **Mute / Pause toggle** suppresses popups completely; when **Android Do Not Disturb** (`NotificationManager.currentInterruptionFilter`) is active, mirrored notifications are still posted silently (`setSilent(true)`) so they remain visible in the notification shade without sound or vibration.
 - **5-second deduplication**: Checks `sha256(package + "\0" + title + "\0" + body)` against recent active notifications; merges `sender_device_name` and `notification_uid`s without double-popping.
 - **Display**: Posts a local notification on a dedicated channel (`mirrored_notifications`) with:
   - Small icon: All-Notify badge; Large icon: cached decrypted app icon.
