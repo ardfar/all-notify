@@ -81,3 +81,4 @@ Because macOS and Windows handle native notification dismissal differently, the 
   - Launch at login toggle.
   - Show notification body preview vs. privacy mode (hide body in OS popup, show only in tray window).
   - Local history retention limit (default 30 days / 5,000 items) + "Clear history now".
+- **Live Status & Media Controls** (Phase 6 / `v1.1`): pinned Live Status (progress bar, in-place silent updates, archives on finish) and Now Playing bar (album art, Play/Pause/Prev/Next/Seek/Volume, Ignore app) in the tray popover, plus an optional toggleable macOS menu-bar live ticker (≤24 chars, Live Status > Music priority; no hardware media-key hijacking). See [LIVE_AND_MEDIA.md](./LIVE_AND_MEDIA.md).

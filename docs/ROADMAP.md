@@ -14,6 +14,7 @@ This roadmap tracks **All-Notify** from initial protocol freeze to a daily-drive
 | **Phase 3** | Tauri Desktop App (Win + Mac) | `desktop/` tray/menu-bar app for macOS & Windows | Phase 0, Phase 1 | Android notifications appear natively on macOS & Windows; desktop Dismiss clears Android & other devices. |
 | **Phase 4** | E2E Hardening & Packaging | Full cross-device E2E matrix, GitHub Actions builds, VPS deployment | Phase 2, Phase 3 | All E2E test scenarios pass; automated builds produce Linux server, APK, `.dmg`, and `.msi`. |
 | **Phase 5** | Pairing Web UI | `/admin` web page, one-time pairing codes (link v2), trusted-device "Add device" on Android + desktop | Phase 4 | Fresh VPS → pair all devices from browser/trusted device with zero SSH; v1-paired devices unaffected. See [PAIRING.md](./PAIRING.md). |
+| **Phase 6** (`v1.1`) | Live Status & Media Controls | In-place ongoing tracking (Grab/deliveries) + ephemeral `MediaSession` Now Playing & remote controls (Play/Pause/Next/Prev/Seek/Vol) | `v1.0.0` | Live ongoing cards update silently in place & archive on finish; remote media controls work Mac/Win/Phone B → Phone A; zero offline queue bloat. See [LIVE_AND_MEDIA.md](./LIVE_AND_MEDIA.md). |
 
 ---
 
@@ -33,9 +34,15 @@ flowchart LR
     P51 --> P53["5.3 Desktop Add device"]
     P52 --> P54["5.4 E2E & Docs"]
     P53 --> P54
+    P54 --> P61["6.1 Protocol + Server (ephemeral/target)"]
+    P61 --> P62["6.2 Android Live + MediaSession"]
+    P61 --> P63["6.3 Desktop Live + Media + Ticker"]
+    P62 --> P64["6.4 Live E2E & v1.1.0"]
+    P63 --> P64
 ```
 
 Phase 5: **5.1** must land first (vectors + API contract); **5.2** and **5.3** then run in parallel.
+Phase 6 (`v1.1`): **6.1** must land first (additive protocol v1 schemas/vectors + server ephemeral/targeted relay); **6.2** and **6.3** then run in parallel.
 
 ---
 
@@ -78,6 +85,12 @@ Phase 5: **5.1** must land first (vectors + API contract); **5.2** and **5.3** t
 - **M5.3**: Desktop v2 parser + claim flow, `GET /v1/me`, trusted-only Add device view (`qrcode` SVG, content protection).
 - **M5.4**: E2E pairing scenarios against real server, docs/runbook update (SERVER.md rollout uses `/admin`).
 
+### Phase 6 (`v1.1`) — Live Status & Remote Media Controls
+- **M6.1**: Additive protocol `v1` schemas + test vectors (`live` metadata, `media.state`, `media.command`, `ephemeral`, targeted `target`, `device_offline`); Go server hub ephemeral/targeted relay + `device_offline` broadcast + `art_*` blob TTL refresh.
+- **M6.2**: Android `LiveUpdateThrottler` (≥2s coalesce, `replace_key`, `EXTRA_PROGRESS`), `MediaSessionMonitor` (`MediaSessionManager`, `art_<hash16>` upload, `play_pause`/`next`/`prev`/`seek`/`volume`/`sync`), Room v1→v2 migration, Phone B pinned Live/Media Home UI + toggleable silent ongoing shade controls.
+- **M6.3**: Desktop SQLite live columns + in-place `replace_key` updates, ephemeral media state + 10-min paused TTL + `device_offline` purge + wake `sync`, pinned Live & Now Playing popover header, and toggleable macOS menu-bar live ticker (≤24 chars, Live > Music priority).
+- **M6.4**: Extend live Go-relay E2E matrix & `tests/live_e2e/` (`t08_live_and_media.py`), verify on real hardware, and release `v1.1.0`.
+
 ---
 
 ## Key Risks & Mitigations
@@ -93,8 +106,7 @@ Phase 5: **5.1** must land first (vectors + API contract); **5.2** and **5.3** t
 
 ---
 
-## Post-v1.0 Backlog (Deferred)
+## Post-v1.1 Backlog (Deferred)
 
-- **v1.1**: Inline quick-reply from desktop/other Android phones (`RemoteInput` forwarding); clipboard sync toggle.
-- **v1.2**: Granular per-app-to-device routing rules (e.g., work apps only to work laptop); quiet schedules.
+- **v1.2**: Inline quick-reply from desktop/other Android phones (`RemoteInput` forwarding); optional E2EE clipboard sync; granular per-app-to-device routing rules & quiet schedules; `/admin` key rotation workflow.
 - **v2.0**: iOS receive-only companion (via APNs gateway or self-hosted Web Push); optional BLE ANCS bridge on macOS/Linux for iOS capture.

@@ -191,6 +191,11 @@ Field notes:
 ```
 - `notification_uids` is an array so dismissing a deduplicated/merged notification clears it on every originating phone in one event.
 
+### Phase 6 (`v1.1`) Additive Extensions
+- Outer WS `relay`/`event` adds optional `ephemeral: true` (online-only fan-out, `seq: 0`, no offline queue or ACK), targeted `target: "dev_<id>"`, and server `device_offline` frame.
+- `notification.posted` adds optional `live` metadata (`replace_key`, `is_ongoing`, `progress`, `progress_max`, `indeterminate`).
+- New ephemeral inner payloads: `media.state` and `media.command`, plus `art_<hash16>` album art blobs. See [LIVE_AND_MEDIA.md](./LIVE_AND_MEDIA.md).
+
 ---
 
 ## 5. HTTPS E2EE Blob API (Icons & Image Attachments)
@@ -206,6 +211,7 @@ All endpoints require `Authorization: Bearer <device_token>`.
 ### `blob_id` Naming Rules
 - Regex: `^[a-zA-Z0-9_-]{8,64}$`
 - App icons: `icon_<first_16_hex_chars_of_sha256>` (deterministic so multiple phones share the same encrypted icon upload without duplicating storage).
+- Media album art (Phase 6): `art_<first_16_hex_chars_of_sha256>` (deterministic `≤256×256` WebP, TTL refreshed on `HEAD` like icons).
 - Image attachments: `img_<ULID>` (unique per attachment).
 
 ---

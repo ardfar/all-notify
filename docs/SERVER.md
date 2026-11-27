@@ -89,6 +89,8 @@ CREATE INDEX idx_blobs_expires ON blobs(expires_at);
 5. **Ack (`op: "ack"`)**:
    - Delete from `offline_events` where `recipient_id = device_id AND seq <= ack.seq`.
    - Update `devices.last_seq = MAX(last_seq, ack.seq)` and `last_seen = now`.
+6. **Phase 6 (`v1.1`) Ephemeral & Targeted Relay**:
+   - `relay` frames with `ephemeral: true` bypass `offline_events` and deliver online-only with `seq: 0`; `target` may be a specific active `dev_<id>` (in addition to `"broadcast"`). Disconnects (non-replacement) broadcast `device_offline`, and `HEAD /v1/blobs/art_*` refreshes TTL. See [LIVE_AND_MEDIA.md](./LIVE_AND_MEDIA.md).
 
 ---
 

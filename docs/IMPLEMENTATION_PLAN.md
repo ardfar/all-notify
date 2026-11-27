@@ -233,3 +233,58 @@ cd desktop && npm run tauri build
 - [ ] Manual matrix (PAIRING.md §9) on the real VPS.
 - [ ] Existing v1-paired vivo phone still connects after server upgrade (migration).
 - [ ] Update `centmem` `project.status` → Phase 5 complete.
+
+---
+
+## Phase 6 (`v1.1`): Live Status & Remote Media Controls
+
+**Goal**: Support real-time in-place updating ongoing notifications (Grab/Gojek/deliveries/timers) and strictly ephemeral remote media playback controls across Android, macOS, and Windows without re-pairing or breaking `v1.0.0` clients. Spec: [LIVE_AND_MEDIA.md](./LIVE_AND_MEDIA.md).
+
+**Order**: 6.1 first (additive schemas/vectors + server relay semantics). Then 6.2 (Android) and 6.3 (Desktop) in parallel. Then 6.4 (E2E & `v1.1.0` release).
+
+### 6.1 — Additive Protocol v1 + Go Server (`protocol/`, `server/`)
+1. **Schemas & Vectors (`protocol/`)**:
+   - Add `media_state.schema.json` and `media_command.schema.json`; extend `ws_outer.schema.json` (`ephemeral`, `target` device ID, `device_offline`) and `notification_posted.schema.json` (optional `live` object).
+   - Extend `protocol/cmd/genvectors/main.go` → `test_vectors.json` with deterministic event vectors for `notification.posted` (with `live`), `media.state`, and `media.command`. Keep all existing vectors untouched.
+2. **Server Hub & Blob API (`server/`)**:
+   - In `internal/hub/hub.go` & `internal/api/ws.go`: accept `target == "broadcast"` or targeted `"dev_<id>"` (`target != sender_device_id`); when `ephemeral == true`, bypass SQLite `offline_events` and emit `event` with `seq: 0, ephemeral: true` to online target(s) only.
+   - Broadcast `{"op":"device_offline","device_id":"...","server_ts":...}` when a device's active WS closes without being replaced by a newer socket for the same `device_id`.
+   - In `internal/blobs/`: refresh 24h TTL on `HEAD /v1/blobs/art_*` (matching `icon_*`).
+   - Add race-detector unit/integration tests covering ephemeral zero-DB-write, targeted routing isolation, `device_offline` (normal disconnect vs. socket replacement), and `art_*` TTL refresh.
+
+**Verify**: `cd protocol && go test -v ./... && cd ../server && go test -race -v ./...`
+
+### 6.2 — Android Live Status & Media Controls (`android/`) — after 6.1
+1. **Protocol & Room Migration**:
+   - Parse/encode `live` on `notification.posted`, `media.state`, `media.command`, `ephemeral`, targeted `target`, and `device_offline`; verify new `protocol/test_vectors.json` vectors in `CryptoVectorsTest`.
+   - Room v1 → v2 migration adding `replace_key`, `is_ongoing`, `progress`, `progress_max`, `indeterminate` to `notifications` and `media_enabled` to `app_filters`.
+2. **Live Status Capture & Receiver**:
+   - Extract progress extras + `replace_key` on opt-in `allow_ongoing` notifications; add `LiveUpdateThrottler` (≥2s coalesce, skip unchanged, flush/cancel on remove).
+   - Update `NotificationPipeline` to replace active `replace_key` rows silently in place and update mirrored shade notifications with `.setProgress(...)`, archiving into history on dismiss.
+3. **MediaSession Capture & Remote Control**:
+   - Implement `MediaSessionMonitor` via `MediaSessionManager.getActiveSessions(AllNotifyListenerService)` (filter empty titles & `media_enabled = false`, upload `≤256×256` WebP `art_<hash16>`, emit ephemeral `media.state`).
+   - Execute incoming `media.command` (`play_pause`, `play`, `pause`, `next`, `previous`, `seek`, `volume_up`, `volume_down`, `sync`).
+4. **Phone B UI & Silent Ongoing Controls**:
+   - Pinned **Live & Now Playing** header on Home screen (progress bars, album art, transport + seek + vol buttons, "Ignore app" action) + `media_enabled` switch in App Filters.
+   - Toggleable silent ongoing `mirrored_media` shade notification with Play/Pause/Prev/Next `MediaActionBroadcastReceiver`, auto-cleared on `active: false`, 10-min paused TTL, or `device_offline`.
+
+**Verify**: `cd android && ./gradlew testDebugUnitTest lintDebug assembleDebug` (including Room migration test, throttler unit tests, and live Go-server interop test).
+
+### 6.3 — Desktop Live Status, Media Controls & macOS Menu-Bar Ticker (`desktop/`) — after 6.1, parallel with 6.2
+1. **Protocol & SQLite Migration**:
+   - Update `protocol.rs`, `sync.rs`, and `storage.rs` for `live` columns (idempotent ALTER migration), in-place `replace_key` updates (`UpdatedInPlace`), `ephemeral` frames (no ACK / no `last_acked_seq` bump), `device_offline`, `media.state`, and targeted `media.command` (plus wake `"sync"` after `ReplayComplete`).
+   - Pass all updated `protocol/test_vectors.json` vectors in `cargo test`.
+2. **In-Memory Media Store & Commands**:
+   - Track active media sessions per `(sender_device_id, session_id)` with `art_<hash16>` blob caching, 10-minute paused sweeper, and `ignore_media_app` persistence.
+   - Expose Tauri commands: `get_live_state`, `send_media_command`, `ignore_media_app`, `set_menubar_ticker_enabled`.
+3. **Popover UI & macOS Menu-Bar Ticker**:
+   - Pinned Live Status + Now Playing header above search bar in `desktop/src/` (progress bars, album art, live interpolated track progress/seek slider, Prev / Play-Pause / Next, Vol − / +, Ignore app).
+   - Toggleable macOS menu-bar live ticker in `tray.rs` (`Live Status > Media` priority, ≤24 chars truncation, Settings toggle).
+4. **Live Go-Relay E2E Matrix (`tests/e2e_matrix.rs`)**:
+   - Add `e2e_09` testing 5-update Grab-style live progress (1 row, 1 initial popup, archived on finish) + `media.state` → targeted `media.command` round-trip + `device_offline` cleanup + zero `offline_events` rows for ephemeral frames.
+
+**Verify**: `cd desktop/src-tauri && cargo clippy --all-targets -- -D warnings && cargo test` + `node --check desktop/src/app.js` + `npm run tauri build`.
+
+### 6.4 — Live Hardware E2E & `v1.1.0` Release
+- [ ] Add `tests/live_e2e/suites/t08_live_and_media.py` covering live ongoing progress replacement and real media control on Phone A ↔ Phone B + MacBook.
+- [ ] Update `README.md`, bump versions to `1.1.0`, tag & publish GitHub Release `v1.1.0`, and update `centmem`.
